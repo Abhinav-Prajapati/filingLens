@@ -7,7 +7,15 @@ name = "filingLens"
 version = "0.1.0"
 description = "India Equity Research filingLens"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2", "pyyaml", "pandas"]
+dependencies = [
+    "pydantic>=2",
+    "pyyaml",
+    "pandas",
+    "lxml>=6.1.3",
+]
+
+[project.scripts]
+filinglens = "filingLens.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "hypothesis", "ruff", "mypy"]

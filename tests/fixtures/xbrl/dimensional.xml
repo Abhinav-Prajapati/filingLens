@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Generic (non-NSE) context ids. Dimensions in xbrli:segment (explicit and typed) must be
+     ignored for headline numbers. Also contains a 2-month period that is not Q/6M/9M/FY.
+     Headline FY24 revenue = 500 crore; segment values are 300 and 200. -->
+<x:xbrl xmlns:x="http://www.xbrl.org/2003/instance" xmlns:d="http://xbrl.org/2006/xbrldi"
+        xmlns:f="http://example.com/fin" xmlns:iso4217="http://www.xbrl.org/2003/iso4217">
+<x:context id="c_fy"><x:entity><x:identifier scheme="x">HINDUNILVR</x:identifier></x:entity><x:period><x:startDate>2023-04-01</x:startDate><x:endDate>2024-03-31</x:endDate></x:period></x:context>
+<x:context id="c_seg1"><x:entity><x:identifier scheme="x">HINDUNILVR</x:identifier><x:segment><d:explicitMember dimension="f:SegmentAxis">f:HomeCareMember</d:explicitMember></x:segment></x:entity><x:period><x:startDate>2023-04-01</x:startDate><x:endDate>2024-03-31</x:endDate></x:period></x:context>
+<x:context id="c_seg2"><x:entity><x:identifier scheme="x">HINDUNILVR</x:identifier><x:segment><d:typedMember dimension="f:RowAxis"><f:Row>2</f:Row></d:typedMember></x:segment></x:entity><x:period><x:startDate>2023-04-01</x:startDate><x:endDate>2024-03-31</x:endDate></x:period></x:context>
+<x:context id="c_2m"><x:entity><x:identifier scheme="x">HINDUNILVR</x:identifier></x:entity><x:period><x:startDate>2024-02-01</x:startDate><x:endDate>2024-03-31</x:endDate></x:period></x:context>
+<x:context id="c_bs"><x:entity><x:identifier scheme="x">HINDUNILVR</x:identifier></x:entity><x:period><x:instant>2024-03-31</x:instant></x:period></x:context>
+<x:unit id="INR"><x:measure>iso4217:INR</x:measure></x:unit>
+<f:NatureOfReportStandaloneConsolidated contextRef="c_fy">Consolidated</f:NatureOfReportStandaloneConsolidated>
+<f:RevenueFromOperations contextRef="c_fy" unitRef="INR" decimals="-7">5000000000</f:RevenueFromOperations>
+<f:RevenueFromOperations contextRef="c_seg1" unitRef="INR" decimals="-7">3000000000</f:RevenueFromOperations>
+<f:RevenueFromOperations contextRef="c_seg2" unitRef="INR" decimals="-7">2000000000</f:RevenueFromOperations>
+<f:RevenueFromOperations contextRef="c_2m" unitRef="INR" decimals="-7">800000000</f:RevenueFromOperations>
+<f:Assets contextRef="c_bs" unitRef="INR" decimals="-7">9000000000</f:Assets>
+<f:Assets contextRef="c_seg1" unitRef="INR" decimals="-7">1000000000</f:Assets>
+<f:Remarks contextRef="c_fy">true</f:Remarks>
+</x:xbrl>

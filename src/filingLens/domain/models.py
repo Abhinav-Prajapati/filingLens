@@ -1,6 +1,7 @@
 """Core typed contracts shared by every layer. No I/O, no dependencies on other layers."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
 
@@ -79,6 +80,24 @@ class Fact(BaseModel):
     verified: Literal["no", "pdf", "pdf_scope_mismatch"] = "no"  # cross-check against the PDF
     qa: Literal["ok", "warn", "fail"] = "ok"  # result of accounting checks
     method: str = "xbrl"         # how the fact was extracted
+
+
+@dataclass(frozen=True, slots=True)
+class RawFact:
+    """One fact exactly as it appears in an XBRL file (row of `xbrl_fact_raw`).
+    A dataclass rather than a pydantic model: a filing has hundreds of these."""
+
+    tag: str                    # local name, e.g. "RevenueFromOperations"
+    ns: str                     # namespace URI of the tag
+    value_text: str             # text as written (truncated to 500 chars)
+    value_num: float | None     # parsed number, None for text/boolean facts
+    unit: str                   # e.g. "iso4217:INR", "iso4217:INR/xbrli:shares"
+    decimals: str | None        # XBRL precision attribute, e.g. "-7", "INF"
+    ctx_id: str                 # contextRef
+    period_start: str | None    # ISO date; set for duration contexts
+    period_end: str | None      # ISO date; set for duration contexts
+    instant: str | None         # ISO date; set for instant contexts
+    has_dim: int                # 1 when the context carries dimensions (segments, breakdowns)
 
 
 class Citation(BaseModel):

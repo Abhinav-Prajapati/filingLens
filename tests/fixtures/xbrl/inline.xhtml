@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Inline XBRL: facts are ix:nonFraction / ix:nonNumeric with the concept in @name.
+     Displayed in crore with scale="7"; sign="-" negates; ixt:fixed-zero means 0.
+     FY24: revenue 2,40,893 crore, finance costs 0, other income -12.5 crore (sign test). -->
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"
+      xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:iso4217="http://www.xbrl.org/2003/iso4217"
+      xmlns:ixt="http://www.xbrl.org/inlineXBRL/transformation/2020-02-12"
+      xmlns:in-bse-fin="http://www.bseindia.com/xbrl/fin/2020-03-31/in-bse-fin"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<head><title>Results</title></head>
+<body>
+<div style="display:none"><ix:header>
+  <ix:hidden>
+    <ix:nonNumeric name="in-bse-fin:NatureOfReportStandaloneConsolidated" contextRef="FY">Standalone</ix:nonNumeric>
+    <ix:nonNumeric name="in-bse-fin:Symbol" contextRef="FY">TCS</ix:nonNumeric>
+  </ix:hidden>
+  <ix:resources>
+    <xbrli:context id="FY"><xbrli:entity><xbrli:identifier scheme="x">TCS</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2023-04-01</xbrli:startDate><xbrli:endDate>2024-03-31</xbrli:endDate></xbrli:period></xbrli:context>
+    <xbrli:unit id="INR"><xbrli:measure>iso4217:INR</xbrli:measure></xbrli:unit>
+  </ix:resources>
+</ix:header></div>
+<table>
+  <tr><td>Revenue from operations</td>
+      <td><ix:nonFraction name="in-bse-fin:RevenueFromOperations" contextRef="FY" unitRef="INR" decimals="-7" scale="7" format="ixt:num-dot-decimal">2,40,<b>893</b></ix:nonFraction></td></tr>
+  <tr><td>Other income</td>
+      <td>(<ix:nonFraction name="in-bse-fin:OtherIncome" contextRef="FY" unitRef="INR" decimals="-5" scale="7" sign="-" format="ixt:num-dot-decimal">12.50</ix:nonFraction>)</td></tr>
+  <tr><td>Finance costs</td>
+      <td><ix:nonFraction name="in-bse-fin:FinanceCosts" contextRef="FY" unitRef="INR" decimals="-7" scale="7" format="ixt:fixed-zero">-</ix:nonFraction></td></tr>
+  <tr><td>Nil</td>
+      <td><ix:nonFraction name="in-bse-fin:TaxExpense" contextRef="FY" unitRef="INR" xsi:nil="true"/></td></tr>
+</table>
+</body>
+</html>

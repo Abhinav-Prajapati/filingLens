@@ -1,0 +1,28 @@
+# Golden values: real NSE filings in tests/golden/data/, values read by hand from the file
+# (and cross-checked with the published results). Units: INR crore, EPS in INR per share.
+# Add one entry per company as you collect filings (INFY, HINDUNILVR next).
+#
+# key per fact: "<metric_id> <period_type> <period_end>"  (period_type FY | Q | INSTANT)
+TCS_Annual_INDAS_104549_1090527_12042024090154.xml:
+  ticker: TCS
+  scope: consolidated
+  fy: FY24
+  rounding: Crores
+  facts:
+    revenue_from_operations FY 2024-03-31: 240893
+    other_income FY 2024-03-31: 4422
+    total_income FY 2024-03-31: 245315
+    employee_expense FY 2024-03-31: 140131
+    finance_costs FY 2024-03-31: 778
+    depreciation_amortisation FY 2024-03-31: 4985
+    total_expenses FY 2024-03-31: 182360
+    profit_before_tax FY 2024-03-31: 61997
+    tax_expense FY 2024-03-31: 15898
+    net_profit FY 2024-03-31: 46099          # incl. non-controlling interest (owners: 45,908)
+    eps_basic FY 2024-03-31: 125.88
+    eps_diluted FY 2024-03-31: 125.88
+    revenue_from_operations Q 2024-03-31: 61237
+    net_profit Q 2024-03-31: 12502
+    eps_basic Q 2024-03-31: 34.37
+    total_assets INSTANT 2024-03-31: 146449
+    total_equity INSTANT 2024-03-31: 91319
