@@ -67,6 +67,9 @@ def test_golden_pdf_verifies_tcs_facts():
     facts = facts_from_raw(p.facts, xbrl_meta(p.facts), "TCS", "x", REG).facts
     pdf = parse_pdf(GOLDEN_PDF, "ar", "TCS", "Tata Consultancy Services")
     assert pdf.fy == "FY25" and len(pdf.pages) == 169
+    text = "\n".join(c.text for c in pdf.chunks)
+    assert "fi nancial" not in text and "ﬁ" not in text and "`" not in text   # cleanup
+    assert "(₹ crore)" in text
     groups: dict = {}
     for c in pdf.chunks:
         groups.setdefault((c.page_start, c.scope, c.section), []).append(c.text)

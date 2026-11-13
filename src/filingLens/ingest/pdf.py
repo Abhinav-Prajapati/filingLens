@@ -9,6 +9,13 @@ is one panel.
 Table extraction is deliberately not used: on spreads it merges cells across
 columns and costs ~2 s per page, while the plain text already keeps each row as
 "label / note / this year / last year", which is what search and verification need.
+
+Text cleanup (fonts, not content, cause these):
+* ligature glyphs (ﬁ, ﬂ) are expanded by PyMuPDF; Unicode NFKC is NOT used because it
+  would turn superscript footnote markers into digits ("1,234²" -> "12342");
+* words split beside a ligature ("Secti on", "fi nancial") are rejoined when the joined
+  spelling is at least as common in the same document as the split one ("cash flow" stays);
+* Indian reports draw ₹ with a "Rupee" font at the backtick code point: "`" -> "₹".
 """
 from __future__ import annotations
 
@@ -21,7 +28,7 @@ from pathlib import Path
 from filingLens.domain.models import Chunk, Page
 
 PARSER_NAME = "pymupdf"
-PARSER_VERSION = "1"
+PARSER_VERSION = "2"   # bump to re-parse stored PDFs
 DOC_LABEL = {"annual_report": "Annual Report", "brsr": "BRSR", "transcript": "Earnings call",
              "presentation": "Investor presentation"}
 
@@ -38,6 +45,11 @@ _SECTIONS = [
     ("sustainability", r"sustainability disclosures"),
 ]
 _HEAD_LINES = 6
+_CHARS = str.maketrans({"`": "₹", "\xa0": " ", "\u2002": " ", "\u2003": " ", "\u2009": " ",
+                        "\u202f": " "})
+_LIG = r"(?:ffi|ffl|ff|fi|fl|ft|tt|ti)"
+_SPLITS = (re.compile(rf"\b([A-Za-z]*{_LIG}) ([a-z]+)\b"),   # "Secti on", "fi nancial"
+           re.compile(rf"\b([A-Za-z]+) ({_LIG}[a-z]*)\b"))   # "Arti ficial"
 _SCOPE_IN_HEAD = re.compile(r"(consolidated|standalone) financial statements", re.IGNORECASE)
 
 
@@ -75,6 +87,7 @@ class ParsedPdf:
 def read_panels(path: str | Path, max_pages: int | None = None) -> list[Panel]:
     import pymupdf
 
+    flags = pymupdf.TEXTFLAGS_BLOCKS & ~pymupdf.TEXT_PRESERVE_LIGATURES   # ﬁ -> fi
     panels: list[Panel] = []
     with pymupdf.open(str(path)) as doc:
         for i, pg in enumerate(doc):
@@ -85,11 +98,31 @@ def read_panels(path: str | Path, max_pages: int | None = None) -> list[Panel]:
                        ("R", pymupdf.Rect(r.width / 2, 0, r.width, r.height))]
                       if r.width > r.height else [("", r)])
             for side, clip in halves:
-                blocks = [re.sub(r"[ \t]+", " ", b[4]).strip()
-                          for b in pg.get_text("blocks", clip=clip, sort=True) if b[6] == 0]
+                blocks = [re.sub(r"[ \t]+", " ", b[4].translate(_CHARS)).strip()
+                          for b in pg.get_text("blocks", clip=clip, sort=True, flags=flags)
+                          if b[6] == 0]
                 blocks = [b for b in blocks if b]
                 scanned = sum(map(len, blocks)) < 50 and bool(pg.get_images())
                 panels.append(Panel(i + 1, side, blocks, scanned=scanned))
+    return panels
+
+
+def rejoin_split_words(panels: list[Panel]) -> list[Panel]:
+    """Join "Secti on" -> "Section" when the joined word appears in the same document at
+    least as often as the split pair. Two passes: the space after a ligature, then before."""
+    text = "\n".join(p.text for p in panels)
+    words = Counter(w.lower() for w in re.findall(r"[A-Za-z]+", text))
+    for pat in _SPLITS:
+        pairs = Counter(f"{a} {b}".lower() for a, b in pat.findall(text))
+
+        def join(m: re.Match[str], pairs: Counter[str] = pairs) -> str:
+            a, b = m.group(1), m.group(2)
+            n = words[(a + b).lower()]
+            return a + b if n and n >= pairs[f"{a} {b}".lower()] else m.group(0)
+
+        for p in panels:
+            p.blocks = [pat.sub(join, b) for b in p.blocks]
+        text = "\n".join(p.text for p in panels)
     return panels
 
 
@@ -216,6 +249,6 @@ def build_document(panels: list[Panel], doc_id: str, ticker: str, company: str,
 def parse_pdf(path: str | Path, doc_id: str, ticker: str, company: str,
               doc_type: str = "annual_report", fy: str | None = None,
               max_pages: int | None = None) -> ParsedPdf:
-    panels = classify(read_panels(path, max_pages))
+    panels = classify(rejoin_split_words(read_panels(path, max_pages)))
     fy = fy or infer_fy_pdf([p.text for p in panels[:8]])
     return build_document(panels, doc_id, ticker, company, doc_type, fy)

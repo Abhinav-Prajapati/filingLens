@@ -1,5 +1,13 @@
 """PDF reading, classification and chunking on a generated report (see conftest.report_pdf)."""
-from filingLens.ingest.pdf import classify, heading_text, infer_fy_pdf, pack_blocks, parse_pdf
+from filingLens.ingest.pdf import (
+    Panel,
+    classify,
+    heading_text,
+    infer_fy_pdf,
+    pack_blocks,
+    parse_pdf,
+    rejoin_split_words,
+)
 
 
 def test_spread_split_into_panels_with_own_headers(report_pdf):
@@ -25,8 +33,23 @@ def test_chunks_stay_on_their_page_and_panel(report_pdf):
     assert [c.chunk_id for c in again.chunks] == [c.chunk_id for c in r.chunks]   # stable ids
 
 
+def test_rupee_font_backtick_becomes_rupee_sign(report_pdf):
+    text = "\n".join(c.text for c in parse_pdf(report_pdf, "d", "TCS", "TCS").chunks)
+    assert "(₹ crore)" in text and "`" not in text
+
+
+def test_rejoin_split_words_uses_document_vocabulary():
+    p = Panel(1, "", ["Secti on 135 and fi nancial statements. Arti ficial intelligence.",
+                      "Section financial artificial. cash flow, cash flow, cashflow, ti me, time"])
+    out = rejoin_split_words([p])[0].text
+    assert "Section 135 and financial statements. Artificial intelligence." in out
+    assert "cash flow, cash flow, cashflow" in out      # split pair more common: kept apart
+    assert "time, time" in out
+    q = rejoin_split_words([Panel(1, "", ["Secti on only appears split"])])[0].text
+    assert q == "Secti on only appears split"            # never seen whole: left alone
+
+
 def test_headings_ignore_body_text_and_carry_forward():
-    from filingLens.ingest.pdf import Panel
     body = ("The discussions in this section relate to the consolidated financial statements "
             "of the Company for the year")
     ps = classify([Panel(1, "", ["Management Discussion and Analysis", "86", body]),

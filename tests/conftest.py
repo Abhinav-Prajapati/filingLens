@@ -54,7 +54,7 @@ _SPREAD = {
           "Consolidated Balance Sheet", "As at March 31, 2024",
           "Total assets 2,000", "Total equity 1,500", "Notes 1 to 30 form part of these statements."],
     "R": ["Integrated Annual Report 2023-24", "Consolidated Financial Statements 2023-24", "179",
-          "Consolidated Statement of Profit and Loss", "Year ended March 31, 2024",
+          "Consolidated Statement of Profit and Loss", "Year ended March 31, 2024 (` crore)",
           "Revenue from operations 1,000", "Other income 50", "Total income 1,050",
           "Total expenses 800", "Profit before tax 250", "Tax expense 60",
           "Profit for the year 190", "Basic earnings per share 12.50"],
