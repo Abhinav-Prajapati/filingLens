@@ -12,8 +12,9 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from filingLens.domain.registry import load_registry
-from filingLens.domain.units import fmt_indian
+from filingLens.domain.units import fmt_indian, to_crore
 from filingLens.ingest.audit import metric_coverage, period_type_counts, unmapped_tags
+from filingLens.ingest.utils.files import XBRL_SUFFIXES
 from filingLens.ingest.validate import run_checks
 from filingLens.ingest.xbrl import (
     XbrlParseError,
@@ -24,7 +25,7 @@ from filingLens.ingest.xbrl import (
     xbrl_meta,
 )
 
-XBRL_SUFFIXES = (".xml", ".xbrl", ".zip", ".html", ".htm", ".xhtml")
+INBOX_SUFFIXES = (*XBRL_SUFFIXES, ".zip")
 
 
 def _table(rows: Sequence[dict], cols: Sequence[str]) -> str:
@@ -101,7 +102,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 
     print(f"\nlargest unmapped tags (top {args.top}):")
     um = unmapped_tags(parsed.facts, reg, args.top)
-    print(_table([dict(u, max_abs=(fmt_indian(u["max_abs"] / 1e7, 2) + " cr")
+    print(_table([dict(u, max_abs=(fmt_indian(to_crore(u["max_abs"], 1.0), 2) + " cr")
                        if u["unit"].endswith("INR") else fmt_indian(u["max_abs"], 2))
                   for u in um], ["tag", "kind", "n", "max_abs", "unit"]))
     return 0
@@ -111,7 +112,7 @@ def _expand(paths: Sequence[str]) -> list[Path]:
     out: list[Path] = []
     for p in map(Path, paths):
         if p.is_dir():
-            out += sorted(x for x in p.rglob("*") if x.suffix.lower() in XBRL_SUFFIXES)
+            out += sorted(x for x in p.rglob("*") if x.suffix.lower() in INBOX_SUFFIXES)
         else:
             out.append(p)
     return out

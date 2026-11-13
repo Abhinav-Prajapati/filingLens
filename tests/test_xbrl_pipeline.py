@@ -12,7 +12,8 @@ from filingLens.ingest.audit import (
     period_type_counts,
     unmapped_tags,
 )
-from filingLens.ingest.pipeline import ingest_xbrl, sha256_file
+from filingLens.ingest.pipeline import ingest_xbrl
+from filingLens.ingest.utils.files import sha256_file
 from filingLens.ingest.xbrl import facts_from_raw, parse_xbrl_file, xbrl_meta
 from filingLens.storage.repos import DocumentRepo, FactRepo, RawFactRepo
 

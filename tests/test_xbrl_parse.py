@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from filingLens.ingest.xbrl import XbrlParseError, parse_number, parse_xbrl_bytes, parse_xbrl_file
+from filingLens.ingest.utils.numeric import parse_number
+from filingLens.ingest.xbrl import XbrlParseError, parse_xbrl_bytes, parse_xbrl_file
 
 FX = Path(__file__).parent / "fixtures" / "xbrl"
 

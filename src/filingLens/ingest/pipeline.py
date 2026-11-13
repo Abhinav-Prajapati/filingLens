@@ -11,7 +11,6 @@ calibration after ingesting XBRL.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass, field
@@ -19,6 +18,7 @@ from pathlib import Path
 
 from filingLens.domain.registry import Registry
 from filingLens.ingest.audit import missing_metrics
+from filingLens.ingest.utils.files import sha256_file
 from filingLens.ingest.validate import CheckResult, qa_flags, run_checks
 from filingLens.ingest.xbrl import (
     PARSER_NAME,
@@ -37,14 +37,6 @@ from filingLens.ingest.xbrl import (
 from filingLens.storage.repos import DocumentRepo, FactRepo, RawFactRepo
 
 RESTATEMENT = "restatement"
-
-
-def sha256_file(path: str | Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for b in iter(lambda: f.read(1 << 20), b""):
-            h.update(b)
-    return h.hexdigest()
 
 
 @dataclass
@@ -112,9 +104,7 @@ def register_xbrl(con: sqlite3.Connection, path: str | Path, registry: Registry,
 
 
 def _meta_from_json(s: str | None) -> XbrlMeta:
-    d = json.loads(s or "{}")
-    known = XbrlMeta.__dataclass_fields__
-    return XbrlMeta(**{k: v for k, v in d.items() if k in known})
+    return XbrlMeta.from_dict(json.loads(s or "{}"))
 
 
 def load_filings(con: sqlite3.Connection, tickers: list[str],
