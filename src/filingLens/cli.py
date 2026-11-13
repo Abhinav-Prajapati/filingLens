@@ -5,6 +5,7 @@
     filinglens ingest-xbrl  FILE_OR_DIR ... [--db work/filingLens.db] [--ticker TCS]
     filinglens ingest-pdf   FILE_OR_DIR ... [--db ...] [--ticker TCS] [--force]
     filinglens ingest       [work/inbox] [--db ...] [--force]  XBRL + PDFs + calibration
+    filinglens download     [TCS INFY ...] [--fy FY24] [--list] NSE filings -> work/inbox
     filinglens index        [--db ...] [--model bge-m3|hash]   embed new chunks -> vectors.npy
     filinglens search "QUERY" [--ticker TCS] [--fy FY25] [--section mdna] [-k 5]
 """
@@ -309,6 +310,41 @@ def cmd_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_download(args: argparse.Namespace) -> int:
+    import datetime as dt
+
+    from filingLens.acquire import NSEClient, acquire
+
+    reg = load_registry()
+    tickers = [t.upper() for t in (args.tickers or list(reg.companies))]
+    unknown = [t for t in tickers if t not in reg.companies]
+    if unknown:
+        print(f"ERROR: not in registry.yaml: {unknown}", file=sys.stderr)
+        return 2
+    years = int(args.years)
+    to_date = dt.date.today()
+    rep = acquire(NSEClient(delay=args.delay), args.inbox, tickers,
+                  periods=args.period or ["Annual"], fys=args.fy, scope=args.scope,
+                  from_date=to_date.replace(year=to_date.year - years), to_date=to_date,
+                  annual_reports=args.annual_reports, dry_run=args.list, limit=args.limit)
+    print(_table([{"ticker": f.ticker, "kind": f.kind, "period": f.period, "fy": f.fy or "?",
+                   "scope": f.scope or "?", "file": f.filename[:60]} for f in rep.found],
+                 ["ticker", "kind", "period", "fy", "scope", "file"]))
+    if args.list:
+        print(f"\n{len(rep.found)} files listed (dry run, nothing downloaded)")
+    else:
+        print(f"\ndownloaded {len(rep.downloaded)}  already had {len(rep.skipped)}  "
+              f"failed {len(rep.failed)}  -> {args.inbox}")
+        for u in rep.failed:
+            print(f"  failed: {u}")
+        if rep.downloaded:
+            print(f"next: filinglens ingest {args.inbox} && filinglens index")
+    if rep.blocked:
+        print(f"STOPPED: {rep.blocked}", file=sys.stderr)
+        return 1
+    return 0 if not rep.failed else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="filinglens")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -337,6 +373,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", default="work/filingLens.db")
     p.add_argument("--force", action="store_true", help="re-parse cached PDFs")
     p.set_defaults(func=cmd_ingest)
+    p = sub.add_parser("download", help="download NSE filings into the inbox (polite, cached)")
+    p.add_argument("tickers", nargs="*", help="default: every company in registry.yaml")
+    p.add_argument("--inbox", default="work/inbox")
+    p.add_argument("--period", action="append", choices=["Annual", "Quarterly"],
+                   help="results period (repeatable; default Annual)")
+    p.add_argument("--fy", action="append", default=[], help="only these FYs, e.g. --fy FY24")
+    p.add_argument("--scope", default="both", choices=["both", "consolidated", "standalone"])
+    p.add_argument("--years", default=5, help="look back this many years (default 5)")
+    p.add_argument("--annual-reports", action="store_true", help="also annual-report PDFs")
+    p.add_argument("--list", action="store_true", help="dry run: list what would be fetched")
+    p.add_argument("--limit", type=int, help="download at most N files")
+    p.add_argument("--delay", type=float, default=2.0, help="seconds between requests")
+    p.set_defaults(func=cmd_download)
     p = sub.add_parser("index", help="embed new chunks into the vector file (incremental)")
     p.add_argument("--db", default="work/filingLens.db")
     p.add_argument("--vectors", help="default: vectors.npy next to the database")
