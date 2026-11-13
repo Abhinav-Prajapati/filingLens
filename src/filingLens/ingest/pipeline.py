@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -138,7 +139,7 @@ def rebuild_facts(con: sqlite3.Connection, tickers: list[str], registry: Registr
     return built, checks, filings
 
 
-def ingest_xbrl(con: sqlite3.Connection, paths: list[str | Path], registry: Registry,
+def ingest_xbrl(con: sqlite3.Connection, paths: Sequence[str | Path], registry: Registry,
                 ticker: str | None = None) -> IngestReport:
     report = IngestReport()
     for p in paths:

@@ -6,6 +6,19 @@ Facts come from a verified database (XBRL), never from an LLM. See the V1 build 
 - [x] Phase 1: `domain` (fiscal, units, models, registry.yaml)
 - [x] Phase 2: `storage` (schema, db, FactRepo, ValidationRepo)
 - [x] Phase 3: `ingest` (xbrl parse, canonical facts, validate, tag audit, pipeline, CLI)
+- [x] Phase 4: `ingest/pdf` + `ingest/calibrate` (pages, chunks, FTS, page citations)
+
+## Ingesting everything
+    work/inbox/TCS/xbrl/*.xml          # result filings (NSE XBRL)
+    work/inbox/TCS/annual_report/*.pdf # annual reports
+    filinglens ingest work/inbox --db work/filingLens.db     # XBRL -> PDFs -> calibration
+    filinglens inspect-pdf report.pdf [--page 91]            # no database: sections, chunks
+
+PDFs are read with PyMuPDF. Two-page spreads are split into halves ("panels") so each
+half gets its own section/scope from its running header. Tables are not extracted
+(they are garbled on spreads); statement rows survive as text. Each FY/INSTANT fact is
+matched to the page that prints it; an FY25 report also verifies FY24 facts (prior-year
+column). TCS FY24: 14/14 facts verified, all on PDF page 91 (printed pp. 178-179).
 
 ## Parsing an XBRL filing
     filinglens inspect path/to/TCS_Annual_INDAS_....xml        # no database; prints facts, checks, audit

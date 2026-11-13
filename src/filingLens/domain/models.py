@@ -100,6 +100,36 @@ class RawFact:
     has_dim: int                # 1 when the context carries dimensions (segments, breakdowns)
 
 
+@dataclass(frozen=True, slots=True)
+class Page:
+    """One PDF page (row of `page`). A two-page spread is one Page made of two panels."""
+
+    doc_id: str
+    page_no: int                # 1-based PDF page: what a PDF viewer jumps to
+    text: str
+    scope_tag: str              # consolidated | standalone | mixed | none
+    section: str                # financial_statements, mdna, notice, ...
+    is_scanned: int             # 1 when the page has images but no text
+
+
+@dataclass(frozen=True, slots=True)
+class Chunk:
+    """A searchable piece of text (row of `chunk`). Never crosses a page."""
+
+    chunk_id: str
+    doc_id: str
+    ticker: str
+    fy: str | None
+    doc_type: str
+    scope: str
+    chunk_type: str             # "text"
+    section: str
+    page_start: int
+    page_end: int
+    text: str
+    context_line: str           # "TCS | Annual Report FY25 | mdna | scope: none | page 45 (p. 87)"
+
+
 class Citation(BaseModel):
     """A source reference attached to an answer so the user can check it.
     `fact` citations point to a filing and page; `text` citations carry a snippet."""

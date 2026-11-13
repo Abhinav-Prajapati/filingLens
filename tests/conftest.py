@@ -43,3 +43,44 @@ def seeded(repo):
     facts.append(make_fact("TCS", "total_assets", "FY24", 143000, ptype="INSTANT", start=""))
     repo.upsert_facts(facts)
     return repo
+
+
+# ---- generated annual-report PDF (no binary fixtures in git) ---------------------------------
+# Matches tests/fixtures/xbrl/nse_consolidated_annual.xml (TCS FY24, crore): page 1 is a
+# two-page spread with the consolidated statements, page 2 an MD&A page, page 3 a standalone
+# statement printing the same revenue figure.
+_SPREAD = {
+    "L": ["Integrated Annual Report 2023-24", "Consolidated Financial Statements 2023-24", "178",
+          "Consolidated Balance Sheet", "As at March 31, 2024",
+          "Total assets 2,000", "Total equity 1,500", "Notes 1 to 30 form part of these statements."],
+    "R": ["Integrated Annual Report 2023-24", "Consolidated Financial Statements 2023-24", "179",
+          "Consolidated Statement of Profit and Loss", "Year ended March 31, 2024",
+          "Revenue from operations 1,000", "Other income 50", "Total income 1,050",
+          "Total expenses 800", "Profit before tax 250", "Tax expense 60",
+          "Profit for the year 190", "Basic earnings per share 12.50"],
+}
+_MDNA = ["Management Discussion and Analysis", "86",
+         "Revenue for the year 2023-24 grew to 1,000 crore, driven by strong demand across",
+         "all industry verticals and markets. Employee costs were 600 crore."]
+_STANDALONE = ["Standalone Financial Statements 2023-24", "240", "Standalone Statement of Profit",
+               "Revenue from operations 1,000", "Other income 50 and other standalone items."]
+
+
+def write_lines(page, x, lines):
+    for i, line in enumerate(lines):
+        page.insert_text((x, 40 + 14 * i), line, fontsize=9)
+
+
+@pytest.fixture
+def report_pdf(tmp_path):
+    import pymupdf
+
+    path = tmp_path / "TCS_annual_report_2023-24.pdf"
+    doc = pymupdf.open()
+    spread = doc.new_page(width=1188, height=756)
+    write_lines(spread, 40, _SPREAD["L"])
+    write_lines(spread, 634, _SPREAD["R"])
+    write_lines(doc.new_page(width=594, height=756), 40, _MDNA)
+    write_lines(doc.new_page(width=594, height=756), 40, _STANDALONE)
+    doc.save(path)
+    return path

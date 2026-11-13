@@ -7,7 +7,7 @@ from dataclasses import astuple, fields
 from typing import Protocol
 
 from filingLens.domain.fiscal import fy_int
-from filingLens.domain.models import Fact, RawFact
+from filingLens.domain.models import Chunk, Fact, Page, RawFact
 from filingLens.domain.units import same_value
 
 _FACT_COLS = (
@@ -25,6 +25,8 @@ class FactRepoProtocol(Protocol):
     def delete_facts(self, tickers: Iterable[str], method: str = "xbrl") -> int: ...
     def set_qa(self, tickers: Iterable[str],
                flags: dict[tuple[str, str, str, str, str], str]) -> None: ...
+    def set_citations(self, tickers: Iterable[str],
+                      rows: Iterable[tuple[str, int, str, tuple[str, ...]]]) -> None: ...
     def latest_fy(self, ticker: str) -> str | None: ...
     def coverage(self) -> list[dict]: ...
 
@@ -150,6 +152,20 @@ class FactRepo:
             [(st, *k) for k, st in flags.items()])
         self.con.commit()
 
+    def set_citations(self, tickers: Iterable[str],
+                      rows: Iterable[tuple[str, int, str, tuple[str, ...]]]) -> None:
+        """Clear citations for the tickers, then set (pdf_doc_id, page, verified) per fact key
+        (ticker, metric_id, period_start, period_end, scope)."""
+        tk = list(tickers)
+        self.con.execute(
+            "UPDATE fact SET pdf_doc_id=NULL, page=NULL, verified='no' "
+            f"WHERE ticker IN ({','.join('?' * len(tk))})", tk)
+        self.con.executemany(
+            "UPDATE fact SET pdf_doc_id=?, page=?, verified=? WHERE ticker=? AND metric_id=? "
+            "AND period_start=? AND period_end=? AND scope=?",
+            [(doc, page, ver, *key) for doc, page, ver, key in rows])
+        self.con.commit()
+
     def latest_fy(self, ticker: str) -> str | None:
         r = self.con.execute(
             "SELECT MAX(CAST(substr(fy,3) AS INTEGER)) y FROM fact "
@@ -228,3 +244,45 @@ class RawFactRepo:
             return self.con.execute("SELECT COUNT(*) FROM xbrl_fact_raw WHERE doc_id=?",
                                     (doc_id,)).fetchone()[0]
         return self.con.execute("SELECT COUNT(*) FROM xbrl_fact_raw").fetchone()[0]
+
+
+class TextRepo:
+    """Pages and chunks of PDF documents. Keeps the chunk_fts keyword index in sync."""
+
+    def __init__(self, con: sqlite3.Connection):
+        self.con = con
+
+    def replace(self, doc_id: str, pages: list[Page], chunks: list[Chunk]) -> None:
+        old = [(r[0],) for r in self.con.execute("SELECT chunk_id FROM chunk WHERE doc_id=?",
+                                                  (doc_id,))]
+        self.con.executemany("DELETE FROM chunk_fts WHERE chunk_id=?", old)
+        self.con.execute("DELETE FROM chunk WHERE doc_id=?", (doc_id,))
+        self.con.execute("DELETE FROM page WHERE doc_id=?", (doc_id,))
+        self.con.executemany("INSERT INTO page VALUES (?,?,?,?,?,?)", [astuple(p) for p in pages])
+        self.con.executemany(
+            f"INSERT INTO chunk({','.join(_CHUNK_COLS)}) VALUES ({','.join('?' * len(_CHUNK_COLS))})",
+            [astuple(c) for c in chunks])
+        self.con.executemany("INSERT INTO chunk_fts(chunk_id, body) VALUES (?,?)",
+                             [(c.chunk_id, f"{c.context_line}\n{c.text}") for c in chunks])
+        self.con.commit()
+
+    def page_texts(self, tickers: Iterable[str], doc_type: str = "annual_report") -> list[dict]:
+        """Chunk text grouped by (doc, page, scope, section): one row per panel of a page."""
+        tk = list(tickers)
+        sql = ("SELECT c.doc_id, c.ticker, c.fy, c.page_start AS page, c.scope, c.section, "
+               "group_concat(c.text, char(10)) AS text FROM chunk c "
+               "JOIN document d ON d.doc_id = c.doc_id "
+               f"WHERE d.doc_type=? AND c.ticker IN ({','.join('?' * len(tk))}) "
+               "GROUP BY c.doc_id, c.page_start, c.scope, c.section ORDER BY c.doc_id, page")
+        return [dict(r) for r in self.con.execute(sql, [doc_type, *tk])]
+
+    def counts(self, doc_id: str) -> dict[str, int]:
+        pages, scanned = self.con.execute(
+            "SELECT COUNT(*), COALESCE(SUM(is_scanned), 0) FROM page WHERE doc_id=?",
+            (doc_id,)).fetchone()
+        chunks = self.con.execute("SELECT COUNT(*) FROM chunk WHERE doc_id=?",
+                                  (doc_id,)).fetchone()[0]
+        return {"page": pages, "chunk": chunks, "scanned": scanned}
+
+
+_CHUNK_COLS = [f.name for f in fields(Chunk)]

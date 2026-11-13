@@ -1,22 +1,39 @@
 """Command line entry point.
 
-    filinglens inspect  FILE.xml [--ticker TCS] [--json]      parse one file, no database
-    filinglens ingest-xbrl FILE_OR_DIR ... [--db work/filingLens.db] [--ticker TCS]
+    filinglens inspect      FILE.xml [--ticker TCS] [--json]   parse one XBRL file, no database
+    filinglens inspect-pdf  FILE.pdf [--page 91]               parse one PDF, no database
+    filinglens ingest-xbrl  FILE_OR_DIR ... [--db work/filingLens.db] [--ticker TCS]
+    filinglens ingest-pdf   FILE_OR_DIR ... [--db ...] [--ticker TCS] [--force]
+    filinglens ingest       [work/inbox] [--db ...] [--force]  XBRL + PDFs + calibration
 """
 from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 from filingLens.domain.registry import load_registry
 from filingLens.domain.units import fmt_indian, to_crore
 from filingLens.ingest.audit import metric_coverage, period_type_counts, unmapped_tags
+from filingLens.ingest.calibrate import TickerReport
+from filingLens.ingest.errors import IngestError
+from filingLens.ingest.pdf import parse_pdf
+from filingLens.ingest.pdf_pipeline import (
+    PdfReport,
+    calibrate_db,
+    ingest_inbox,
+    ingest_pdf,
+    pdf_doc_type,
+)
+from filingLens.ingest.pipeline import IngestReport, ingest_xbrl
 from filingLens.ingest.utils.files import XBRL_SUFFIXES
 from filingLens.ingest.validate import run_checks
 from filingLens.ingest.xbrl import (
+    XbrlMeta,
     XbrlParseError,
     facts_from_raw,
     is_result_filing,
@@ -24,6 +41,7 @@ from filingLens.ingest.xbrl import (
     resolve_ticker,
     xbrl_meta,
 )
+from filingLens.storage.repos import FactRepo
 
 INBOX_SUFFIXES = (*XBRL_SUFFIXES, ".zip")
 
@@ -108,34 +126,32 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
-def _expand(paths: Sequence[str]) -> list[Path]:
+def _expand(paths: Sequence[str], suffixes: Sequence[str] = INBOX_SUFFIXES) -> list[Path]:
     out: list[Path] = []
     for p in map(Path, paths):
         if p.is_dir():
-            out += sorted(x for x in p.rglob("*") if x.suffix.lower() in INBOX_SUFFIXES)
+            out += sorted(x for x in p.rglob("*") if x.suffix.lower() in suffixes)
         else:
             out.append(p)
     return out
 
 
-def cmd_ingest_xbrl(args: argparse.Namespace) -> int:
-    from filingLens.ingest.pipeline import ingest_xbrl
+@contextmanager
+def _db(path: str) -> Iterator[sqlite3.Connection]:
     from filingLens.storage.db import connect
 
-    reg = load_registry()
-    Path(args.db).parent.mkdir(parents=True, exist_ok=True)
-    con = connect(args.db)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    con = connect(path)
     try:
-        return _ingest_and_report(con, args, reg, ingest_xbrl)
+        yield con
     finally:
         con.close()
 
 
-def _ingest_and_report(con, args, reg, ingest_xbrl) -> int:  # type: ignore[no-untyped-def]
-    rep = ingest_xbrl(con, list(_expand(args.paths)), reg, ticker=args.ticker)
+def _print_xbrl(con: sqlite3.Connection, rep: IngestReport) -> None:
     print(_table([{"file": Path(f.path).name[:48], "ticker": f.ticker or "", "type": f.doc_type,
-                       "scope": f.scope, "fy": f.fy or "", "period_end": f.period_end, "raw": f.n_raw,
-                       "facts": f.n_facts, "missing": len(f.missing), "error": f.error or ""}
+                   "scope": f.scope, "fy": f.fy or "", "period_end": f.period_end, "raw": f.n_raw,
+                   "facts": f.n_facts, "missing": len(f.missing), "error": f.error or ""}
                   for f in rep.files],
                  ["file", "ticker", "type", "scope", "fy", "period_end", "raw", "facts",
                   "missing", "error"]))
@@ -144,15 +160,103 @@ def _ingest_and_report(con, args, reg, ingest_xbrl) -> int:  # type: ignore[no-u
             print(f"WARNING {Path(f.path).name}: {w}")
     bad = [c for c in rep.checks if c.status != "pass"]
     print(f"\nfacts={rep.n_facts}  restatements={rep.n_restatements}  "
-          f"checks={len(rep.checks)} (not passing: {len(bad)})  db={args.db}")
+          f"checks={len(rep.checks)} (not passing: {len(bad)})")
     for c in bad:
         print(f"  {c.status:4} {c.ticker} {c.scope} {c.period_end} {c.check}: {c.detail}")
-    if rep.tickers:
-        from filingLens.storage.repos import FactRepo
-        fy = [c for c in FactRepo(con).coverage() if c["period_type"] == "FY"]
-        print("\nFY coverage:")
-        print(_table(fy, ["ticker", "scope", "metric_id", "n", "first_fy", "last_fy"]))
+    fy = [c for c in FactRepo(con).coverage() if c["period_type"] == "FY"]
+    print("\nFY coverage:")
+    print(_table(fy, ["ticker", "scope", "metric_id", "n", "first_fy", "last_fy", "pdf_verified"]))
+
+
+def _print_pdfs(reps: list[PdfReport]) -> None:
+    print(_table([{"file": Path(r.path).name[:48], "ticker": r.ticker or "", "type": r.doc_type,
+                   "fy": r.fy or "", "pages": r.n_pages, "chunks": r.n_chunks,
+                   "scanned": r.n_scanned, "quality": r.parse_quality,
+                   "status": r.error or ("cached" if r.skipped else "parsed")} for r in reps],
+                 ["file", "ticker", "type", "fy", "pages", "chunks", "scanned", "quality",
+                  "status"]))
+
+
+def _print_calibration(reports: dict[str, TickerReport]) -> None:
+    print("\ncalibration (FY + INSTANT facts found in the annual report):")
+    print(_table([{"ticker": t, "eligible": r.eligible, "verified": r.verified,
+                   "rate": f"{r.rate:.0%}", "scope_mismatch": r.scope_mismatch,
+                   "units": " ".join(f"{k}={v}" for k, v in r.unit_votes.items()),
+                   "unit_check": "ok" if r.unit_ok else "MISMATCH"}
+                  for t, r in reports.items()],
+                 ["ticker", "eligible", "verified", "rate", "scope_mismatch", "units",
+                  "unit_check"]))
+    for t, r in reports.items():
+        for nf in r.not_found:
+            print(f"  not found {t}: {nf}")
+
+
+def cmd_ingest_xbrl(args: argparse.Namespace) -> int:
+    reg = load_registry()
+    with _db(args.db) as con:
+        rep = ingest_xbrl(con, _expand(args.paths), reg, ticker=args.ticker)
+        _print_xbrl(con, rep)
+        if rep.tickers:                     # rebuilding facts cleared their citations
+            _print_calibration(calibrate_db(con, rep.tickers))
     return 0 if rep.ok else 1
+
+
+def cmd_ingest_pdf(args: argparse.Namespace) -> int:
+    reg = load_registry()
+    with _db(args.db) as con:
+        reps = [ingest_pdf(con, p, reg, ticker=args.ticker, force=args.force)
+                for p in _expand(args.paths, (".pdf",))]
+        _print_pdfs(reps)
+        tickers = sorted({r.ticker for r in reps if r.ticker and not r.error})
+        if tickers:
+            _print_calibration(calibrate_db(con, tickers))
+    return 0 if all(r.error is None for r in reps) else 1
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    reg = load_registry()
+    with _db(args.db) as con:
+        try:
+            rep = ingest_inbox(con, args.inbox, reg, force=args.force)
+        except IngestError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+        if rep.xbrl:
+            _print_xbrl(con, rep.xbrl)
+        print()
+        _print_pdfs(rep.pdfs)
+        _print_calibration(rep.calibration)
+    ok = (rep.xbrl is None or rep.xbrl.ok) and all(r.error is None for r in rep.pdfs)
+    return 0 if ok else 1
+
+
+def cmd_inspect_pdf(args: argparse.Namespace) -> int:
+    reg = load_registry()
+    path = Path(args.file)
+    ticker = args.ticker or resolve_ticker(XbrlMeta(), path.name, reg) or "?"
+    company = reg.companies[ticker].name if ticker in reg.companies else ticker
+    try:
+        parsed = parse_pdf(path, "inspect", ticker, company, pdf_doc_type(path.name))
+    except (RuntimeError, ValueError) as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+    print(f"file      {path.name}\nticker    {ticker}   fy {parsed.fy}   pages {len(parsed.pages)}"
+          f"   panels {len(parsed.panels)}   chunks {len(parsed.chunks)}"
+          f"   quality {parsed.parse_quality}")
+    if args.page:
+        for c in parsed.chunks:
+            if c.page_start == args.page:
+                print(f"\n--- {c.context_line}\n{c.text}")
+        return 0
+    rows, prev = [], None
+    for p in parsed.panels:                  # one row per run of panels with the same section
+        if (p.section, p.scope) != prev:
+            rows.append({"from_page": f"{p.page_no}{p.side}", "printed": p.printed or "",
+                         "section": p.section, "scope": p.scope})
+            prev = (p.section, p.scope)
+    print("\nsections (each row runs until the next one):")
+    print(_table(rows, ["from_page", "printed", "section", "scope"]))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -164,11 +268,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--top", type=int, default=15)
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_inspect)
-    p = sub.add_parser("ingest-xbrl", help="ingest XBRL files or folders into the database")
-    p.add_argument("paths", nargs="+")
+    p = sub.add_parser("inspect-pdf", help="parse one PDF (no database): sections, chunks")
+    p.add_argument("file")
+    p.add_argument("--ticker")
+    p.add_argument("--page", type=int, help="print the chunks of this PDF page")
+    p.set_defaults(func=cmd_inspect_pdf)
+    for name, func, hlp in (("ingest-xbrl", cmd_ingest_xbrl, "ingest XBRL files or folders"),
+                            ("ingest-pdf", cmd_ingest_pdf, "ingest PDF files or folders")):
+        p = sub.add_parser(name, help=hlp)
+        p.add_argument("paths", nargs="+")
+        p.add_argument("--db", default="work/filingLens.db")
+        p.add_argument("--ticker", help="force the ticker for every file")
+        if name == "ingest-pdf":
+            p.add_argument("--force", action="store_true", help="re-parse cached PDFs")
+        p.set_defaults(func=func)
+    p = sub.add_parser("ingest", help="ingest inbox/<TICKER>/ (XBRL + PDFs) and calibrate")
+    p.add_argument("inbox", nargs="?", default="work/inbox")
     p.add_argument("--db", default="work/filingLens.db")
-    p.add_argument("--ticker", help="force the ticker for every file")
-    p.set_defaults(func=cmd_ingest_xbrl)
+    p.add_argument("--force", action="store_true", help="re-parse cached PDFs")
+    p.set_defaults(func=cmd_ingest)
     return ap
 
 

@@ -50,3 +50,29 @@ def test_golden_has_fy_facts_for_every_metric(golden):
 def test_golden_validation_has_no_failures(golden):
     _, _, _, filing = golden
     assert [c for c in run_checks(filing.facts) if c.status == "fail"] == []
+
+
+# ---- real annual report (kept out of git; skipped when absent) --------------------------------
+GOLDEN_PDF = Path(__file__).parents[1] / "tcs-integrated-annual-report-2024-2025-2pager.pdf"
+
+
+def test_golden_pdf_verifies_tcs_facts():
+    if not GOLDEN_PDF.exists():
+        pytest.skip(f"golden PDF not present: {GOLDEN_PDF}")
+    from filingLens.ingest.calibrate import PageText, calibrate
+    from filingLens.ingest.pdf import parse_pdf
+
+    xml = GOLDEN / "data" / "TCS_Annual_INDAS_104549_1090527_12042024090154.xml"
+    p = parse_xbrl_file(xml)
+    facts = facts_from_raw(p.facts, xbrl_meta(p.facts), "TCS", "x", REG).facts
+    pdf = parse_pdf(GOLDEN_PDF, "ar", "TCS", "Tata Consultancy Services")
+    assert pdf.fy == "FY25" and len(pdf.pages) == 169
+    groups: dict = {}
+    for c in pdf.chunks:
+        groups.setdefault((c.page_start, c.scope, c.section), []).append(c.text)
+    pages = [PageText("ar", "TCS", pdf.fy, pg, sc, se, "\n".join(t))
+             for (pg, sc, se), t in groups.items()]
+    citations, reports = calibrate(facts, pages)
+    assert reports["TCS"].rate >= 0.6 and reports["TCS"].unit_ok      # Phase 4 exit criterion
+    pages_by_metric = {c.key[1]: c.page for c in citations}
+    assert pages_by_metric["revenue_from_operations"] == 91             # consolidated P&L, p. 179
