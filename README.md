@@ -8,6 +8,21 @@ Facts come from a verified database (XBRL), never from an LLM. See the V1 build 
 - [x] Phase 3: `ingest` (xbrl parse, canonical facts, validate, tag audit, pipeline, CLI)
 - [x] Phase 4: `ingest/pdf` + `ingest/calibrate` (pages, chunks, FTS, page citations)
 - [x] Phase 5: `retrieval` (BGE-M3 embeddings in vectors.npy, FTS5 keyword, RRF hybrid search)
+- [x] Phase 6: `analytics` (YoY, CAGR, margins, trends, unit-safe comparisons)
+
+## Getting data and analysing it
+    filinglens download TCS INFY HINDUNILVR --scope consolidated   # NSE XBRL -> work/inbox
+    filinglens ingest work/inbox
+    filinglens trend TCS revenue_from_operations          # values, YoY, CAGR, page citations
+    filinglens trend INFY net_margin                       # derived ratio; change in pp
+    filinglens compare net_margin --ticker TCS --ticker INFY --ticker HINDUNILVR
+    filinglens compare net_profit --ticker TCS --ticker INFY --normalise index100
+    filinglens compare revenue_from_operations net_profit --ticker TCS
+
+Derived metrics: net_margin, pbt_margin, effective_tax_rate, employee_cost_ratio. Missing years
+are shown as gaps (never interpolated); growth from a zero/negative base and CAGR of ratios are
+not computed; crore, per-share and % values are never mixed in one table. NSE's FY22 "Annual"
+XBRL files hold only segment breakdowns, so headline data currently starts at FY23.
 
 ## Search
     uv sync --extra dev --extra embed          # torch + sentence-transformers (GPU if available)

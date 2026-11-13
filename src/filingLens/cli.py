@@ -6,6 +6,8 @@
     filinglens ingest-pdf   FILE_OR_DIR ... [--db ...] [--ticker TCS] [--force]
     filinglens ingest       [work/inbox] [--db ...] [--force]  XBRL + PDFs + calibration
     filinglens download     [TCS INFY ...] [--fy FY24] [--list] NSE filings -> work/inbox
+    filinglens trend        TCS revenue_from_operations         values, YoY, CAGR
+    filinglens compare      net_margin --ticker TCS --ticker INFY   side by side
     filinglens index        [--db ...] [--model bge-m3|hash]   embed new chunks -> vectors.npy
     filinglens search "QUERY" [--ticker TCS] [--fy FY25] [--section mdna] [-k 5]
 """
@@ -345,6 +347,101 @@ def cmd_download(args: argparse.Namespace) -> int:
     return 0 if not rep.failed else 1
 
 
+def _fmt_num(v: float | None, unit: str) -> str:
+    if v is None:
+        return "-"
+    if unit == "%":
+        return f"{v:.2f}%"
+    if "crore" in unit:
+        return fmt_indian(v)
+    return f"{v:,.2f}"
+
+
+def _pct(v: float | None, pp: bool = False) -> str:
+    if v is None:
+        return "-"
+    return f"{v:+.2f} pp" if pp else f"{v * 100:+.2f}%"
+
+
+def _getter(con: sqlite3.Connection):  # type: ignore[no-untyped-def]
+    repo = FactRepo(con)
+    return lambda t, m, s, p: repo.get_series(t, m, scope=s, period_type=p)
+
+
+def cmd_trend(args: argparse.Namespace) -> int:
+    from filingLens.analytics.derived import load_series
+    from filingLens.analytics.trend import build_trend
+
+    reg = load_registry()
+    with _db(args.db) as con:
+        try:
+            facts, notes = load_series(_getter(con), reg, args.ticker.upper(), args.metric,
+                                       args.scope, args.period)
+        except KeyError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+    if not facts:
+        print("no data: " + "; ".join(notes))
+        return 1
+    t = build_trend(facts)
+    print(f"{t.ticker}  {t.metric_id}  ({t.scope}, {t.unit})")
+    print(_table([{"period": r.label, "value": _fmt_num(r.value, t.unit),
+                   "yoy": _pct(r.change, t.is_ratio),
+                   "source": (f"p.{r.fact.page} {r.fact.verified}" if r.fact and r.fact.page
+                              else (r.fact.method if r.fact else ""))} for r in t.rows],
+                 ["period", "value", "yoy", "source"]))
+    if t.cagr is not None and t.cagr_span:
+        print(f"CAGR {t.cagr_span[0]}-{t.cagr_span[1]}: {_pct(t.cagr)}")
+    for n in notes + t.notes:
+        print(f"note: {n}")
+    return 0
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    from filingLens.analytics.compare import build_comparison
+    from filingLens.analytics.derived import load_series
+
+    reg = load_registry()
+    tickers = [t.upper() for t in args.ticker]
+    if len(tickers) > 1 and len(args.metrics) > 1:
+        print("ERROR: compare several companies on one metric, or several metrics for one "
+              "company", file=sys.stderr)
+        return 2
+    axis = "companies" if len(tickers) > 1 else ("metrics" if len(args.metrics) > 1 else "periods")
+    pairs = ([(t, args.metrics[0], t) for t in tickers] if axis == "companies"
+             else [(tickers[0], m, m) for m in args.metrics])
+    series, notes = {}, []
+    with _db(args.db) as con:
+        get = _getter(con)
+        for t, m, label in pairs:
+            try:
+                series[label], n = load_series(get, reg, t, m, args.scope, args.period)
+            except KeyError as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 2
+            notes += n
+    try:
+        c = build_comparison(series, axis, args.normalise, args.fy or None)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+    import pandas as pd
+
+    rows = []
+    for period, r in c.frame.iterrows():
+        row: dict[str, str] = {"period": str(period)}
+        for col in c.frame.columns:
+            v = None if pd.isna(r[col]) else float(r[col])
+            row[col] = _pct(v) if col == "change_vs_first" else _fmt_num(
+                v, "%" if c.unit in ("%", "% of total") else c.unit)
+        rows.append(row)
+    print(f"{axis}: {', '.join(series)}  ({args.scope}, {c.unit})")
+    print(_table(rows, ["period", *map(str, c.frame.columns)]))
+    for note in notes + c.notes:
+        print(f"note: {note}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="filinglens")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -386,6 +483,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, help="download at most N files")
     p.add_argument("--delay", type=float, default=2.0, help="seconds between requests")
     p.set_defaults(func=cmd_download)
+    p = sub.add_parser("trend", help="one metric over time: values, YoY, CAGR")
+    p.add_argument("ticker")
+    p.add_argument("metric", help="registry metric or derived: net_margin, pbt_margin, "
+                                  "effective_tax_rate, employee_cost_ratio")
+    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--scope", default="consolidated", choices=["consolidated", "standalone"])
+    p.add_argument("--period", default="FY", choices=["FY", "Q"])
+    p.set_defaults(func=cmd_trend)
+    p = sub.add_parser("compare", help="companies, metrics or years side by side")
+    p.add_argument("metrics", nargs="+")
+    p.add_argument("--ticker", action="append", required=True)
+    p.add_argument("--fy", action="append", default=[], help="only these years, e.g. FY24")
+    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--scope", default="consolidated", choices=["consolidated", "standalone"])
+    p.add_argument("--period", default="FY", choices=["FY", "Q"])
+    p.add_argument("--normalise", default="none", choices=["none", "index100", "share"])
+    p.set_defaults(func=cmd_compare)
     p = sub.add_parser("index", help="embed new chunks into the vector file (incremental)")
     p.add_argument("--db", default="work/filingLens.db")
     p.add_argument("--vectors", help="default: vectors.npy next to the database")
