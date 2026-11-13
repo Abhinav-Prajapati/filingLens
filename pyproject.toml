@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "copilot"
+version = "0.1.0"
+description = "India Equity Research Copilot"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2", "pyyaml", "pandas"]
+
+[project.optional-dependencies]
+dev = ["pytest", "hypothesis", "ruff", "mypy"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+copilot = ["domain/*.yaml", "storage/*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = ["llm: live LLM tests (excluded from CI)"]
+
+[tool.ruff]
+line-length = 100

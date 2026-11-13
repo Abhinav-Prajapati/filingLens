@@ -1,0 +1,108 @@
+companies:
+  TCS:
+    isin: INE467B01029
+    name: Tata Consultancy Services
+    sector: IT
+    aliases: [tcs, tata consultancy services, tata consultancy]
+  INFY:
+    isin: INE009A01021
+    name: Infosys
+    sector: IT
+    aliases: [infy, infosys]
+  HINDUNILVR:
+    isin: INE030A01027
+    name: Hindustan Unilever
+    sector: FMCG
+    aliases: [hindunilvr, hul, hindustan unilever, unilever]
+
+metrics:
+  revenue_from_operations:
+    desc: Revenue from operations
+    kind: flow
+    unit_kind: money
+    tags: [revenuefromoperations]
+    synonyms: [revenue from operations, revenue, net sales, sales, turnover, aay, bikri, kamai]
+  other_income:
+    desc: Other income
+    kind: flow
+    unit_kind: money
+    tags: [otherincome]
+    synonyms: [other income]
+  total_income:
+    desc: Total income
+    kind: flow
+    unit_kind: money
+    tags: [income, totalincome]
+    synonyms: [total income]
+  employee_expense:
+    desc: Employee benefit expense
+    kind: flow
+    unit_kind: money
+    tags: [employeebenefitexpense, employeebenefitsexpense]
+    synonyms: [employee benefit expense, employee expense, employee cost, staff cost]
+  finance_costs:
+    desc: Finance costs
+    kind: flow
+    unit_kind: money
+    tags: [financecosts]
+    synonyms: [finance costs, finance cost, interest cost]
+  depreciation_amortisation:
+    desc: Depreciation and amortisation
+    kind: flow
+    unit_kind: money
+    tags: [depreciationdepletionandamortisationexpense, depreciationandamortisationexpense]
+    synonyms: [depreciation and amortisation, depreciation, amortisation]
+  total_expenses:
+    desc: Total expenses
+    kind: flow
+    unit_kind: money
+    tags: [expenses, totalexpenses]
+    synonyms: [total expenses, expenses, kharcha]
+  profit_before_tax:
+    desc: Profit before tax
+    kind: flow
+    unit_kind: money
+    tags: [profitbeforetax, profitlossbeforetax]
+    synonyms: [profit before tax, pbt]
+  tax_expense:
+    desc: Tax expense
+    kind: flow
+    unit_kind: money
+    tags: [taxexpense, totaltaxexpense]
+    synonyms: [tax expense, income tax, tax]
+  net_profit:
+    desc: Net profit (profit for the period)
+    kind: flow
+    unit_kind: money
+    tags: [profitlossforperiod, profitloss, profitlossforperiodfromcontinuingoperations]
+    synonyms: [net profit, profit after tax, profit for the year, net income, pat, profit, munafa, nafa]
+  eps_basic:
+    desc: Basic earnings per share
+    kind: flow
+    unit_kind: per_share
+    tags:
+      - basicearningslosspersharefromcontinuinganddiscontinuedoperations
+      - basicearningslosspersharefromcontinuingoperations
+      - basicearningspershare
+    synonyms: [basic eps, eps, earnings per share]
+  eps_diluted:
+    desc: Diluted earnings per share
+    kind: flow
+    unit_kind: per_share
+    tags:
+      - dilutedearningslosspersharefromcontinuinganddiscontinuedoperations
+      - dilutedearningslosspersharefromcontinuingoperations
+      - dilutedearningspershare
+    synonyms: [diluted eps, diluted earnings per share]
+  total_assets:
+    desc: Total assets
+    kind: stock
+    unit_kind: money
+    tags: [assets, totalassets]
+    synonyms: [total assets]
+  total_equity:
+    desc: Total equity
+    kind: stock
+    unit_kind: money
+    tags: [equity, totalequity]
+    synonyms: [total equity, net worth, shareholders equity, equity]
