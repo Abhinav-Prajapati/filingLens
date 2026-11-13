@@ -5,11 +5,14 @@
     filinglens ingest-xbrl  FILE_OR_DIR ... [--db work/filingLens.db] [--ticker TCS]
     filinglens ingest-pdf   FILE_OR_DIR ... [--db ...] [--ticker TCS] [--force]
     filinglens ingest       [work/inbox] [--db ...] [--force]  XBRL + PDFs + calibration
+    filinglens index        [--db ...] [--model bge-m3|hash]   embed new chunks -> vectors.npy
+    filinglens search "QUERY" [--ticker TCS] [--fy FY25] [--section mdna] [-k 5]
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 from collections.abc import Iterator, Sequence
@@ -259,6 +262,53 @@ def cmd_inspect_pdf(args: argparse.Namespace) -> int:
     return 0
 
 
+def _vectors_path(args: argparse.Namespace) -> Path:
+    return Path(args.vectors) if args.vectors else Path(args.db).parent / "vectors.npy"
+
+
+def cmd_index(args: argparse.Namespace) -> int:
+    from filingLens.retrieval.embedder import get_embedder
+    from filingLens.retrieval.index import update_index
+
+    with _db(args.db) as con:
+        n = con.execute("SELECT COUNT(*) FROM chunk").fetchone()[0]
+        if not n:
+            print("ERROR: no chunks in the database; run `filinglens ingest` first",
+                  file=sys.stderr)
+            return 2
+        emb = get_embedder(args.model)
+        print(f"model {emb.name}  dim {emb.dim}  device {getattr(emb, 'device', 'cpu')}")
+        _, rep = update_index(con, emb, _vectors_path(args))
+    print(f"vectors {rep.total}  added {rep.added}  removed {rep.removed}"
+          f"{'  (rebuilt: new model or no index)' if rep.rebuilt else ''}  -> {_vectors_path(args)}")
+    return 0
+
+
+def cmd_search(args: argparse.Namespace) -> int:
+    from filingLens.retrieval.index import VectorIndex
+    from filingLens.retrieval.search import Searcher, SearchFilters
+
+    filters = SearchFilters(tuple(t.upper() for t in args.ticker), tuple(args.fy),
+                            tuple(args.doc_type), tuple(args.scope), tuple(args.section))
+    with _db(args.db) as con:
+        index = None if args.keyword_only else VectorIndex.load(_vectors_path(args))
+        emb = None
+        if index is not None:
+            from filingLens.retrieval.embedder import get_embedder
+            emb = get_embedder("hash" if index.model.startswith("hash") else index.model)
+        elif not args.keyword_only:
+            print("note: no vector index (run `filinglens index`); keyword search only",
+                  file=sys.stderr)
+        hits = Searcher(con, index, emb).search(args.query, filters, k=args.k)
+    for i, h in enumerate(hits, 1):
+        ranks = " ".join(f"{k}#{v}" for k, v in sorted(h.ranks.items()))
+        snippet = re.sub(r"\s+", " ", h.text)[:args.chars]
+        print(f"[{i}] {h.context_line}   ({ranks}, rrf {h.score:.4f})\n    {snippet}\n")
+    if not hits:
+        print("no results")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="filinglens")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -287,6 +337,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", default="work/filingLens.db")
     p.add_argument("--force", action="store_true", help="re-parse cached PDFs")
     p.set_defaults(func=cmd_ingest)
+    p = sub.add_parser("index", help="embed new chunks into the vector file (incremental)")
+    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--vectors", help="default: vectors.npy next to the database")
+    p.add_argument("--model", default="bge-m3", help="bge-m3 (default), hash, or a model id")
+    p.set_defaults(func=cmd_index)
+    p = sub.add_parser("search", help="hybrid search over report text")
+    p.add_argument("query")
+    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--vectors")
+    p.add_argument("--ticker", action="append", default=[])
+    p.add_argument("--fy", action="append", default=[])
+    p.add_argument("--doc-type", action="append", default=[])
+    p.add_argument("--scope", action="append", default=[])
+    p.add_argument("--section", action="append", default=[])
+    p.add_argument("-k", type=int, default=5)
+    p.add_argument("--chars", type=int, default=300, help="snippet length")
+    p.add_argument("--keyword-only", action="store_true")
+    p.set_defaults(func=cmd_search)
     return ap
 
 

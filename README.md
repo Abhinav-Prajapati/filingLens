@@ -7,6 +7,17 @@ Facts come from a verified database (XBRL), never from an LLM. See the V1 build 
 - [x] Phase 2: `storage` (schema, db, FactRepo, ValidationRepo)
 - [x] Phase 3: `ingest` (xbrl parse, canonical facts, validate, tag audit, pipeline, CLI)
 - [x] Phase 4: `ingest/pdf` + `ingest/calibrate` (pages, chunks, FTS, page citations)
+- [x] Phase 5: `retrieval` (BGE-M3 embeddings in vectors.npy, FTS5 keyword, RRF hybrid search)
+
+## Search
+    uv sync --extra dev --extra embed          # torch + sentence-transformers (GPU if available)
+    filinglens index                           # embed new chunks -> work/vectors.npy (+ .json)
+    filinglens search "how are geopolitical risks managed?" --ticker TCS --section mdna -k 5
+    pytest -m embed                            # recall@5 on tests/golden/recall.yaml (real model)
+
+BGE-M3 runs in fp16 on a CUDA GPU (~1.5 GB VRAM incl. activations), fp32 on CPU otherwise.
+Filters apply before ranking. Keyword queries drop stopwords (English + Hinglish) and RRF uses
+k=10: recall@5 went from 7/11 (k=60, all words) to 9/11. Romanised Hinglish is the weak spot.
 
 ## Ingesting everything
     work/inbox/TCS/xbrl/*.xml          # result filings (NSE XBRL)

@@ -20,6 +20,10 @@ filinglens = "filingLens.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "hypothesis", "ruff", "mypy"]
+embed = [
+    "sentence-transformers>=6.3.0",
+    "torch>=2.15.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -30,7 +34,12 @@ filingLens = ["domain/*.yaml", "storage/*.sql"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-markers = ["llm: live LLM tests (excluded from CI)"]
+markers = [
+    "llm: live LLM tests (excluded from CI)",
+    "embed: needs the real embedding model; run with `pytest -m embed`",
+]
+addopts = '-m "not embed and not llm"'
+
 
 [tool.ruff]
 line-length = 100

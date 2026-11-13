@@ -1,0 +1,31 @@
+# Retrieval recall set for the TCS FY25 integrated annual report (2-page-spread PDF).
+# Each question lists the PDF pages whose text answers it; a hit = any of them in the top 5.
+# Questions are worded differently from the report on purpose (tests meaning, not keywords).
+# Run: pytest -m embed   (needs `uv sync --extra embed`, the PDF at the repo root, and the
+# BGE-M3 model, which is downloaded on first use).
+pdf: tcs-integrated-annual-report-2024-2025-2pager.pdf
+ticker: TCS
+min_hit_rate: 0.8
+questions:
+  - q: What is the employee attrition rate?
+    pages: [13, 43]                 # "13.3% LTM attrition in IT services"
+  - q: How many people does TCS employ?
+    pages: [7, 13, 43, 48]          # 607,979 employees
+  - q: How many patents has the company been granted?
+    pages: [14]                     # 4,820 granted / 8,816 filed
+  - q: How much money was spent on corporate social responsibility?
+    pages: [15, 39]                 # ₹1,038 crore global CSR spend; CSR annexure
+  - q: What final dividend did the board recommend?
+    pages: [8, 35]                  # final dividend ₹30 per share
+  - q: What was the value of new deals signed during the year?
+    pages: [7]                      # TCV US$ 39.4 billion
+  - q: What are the main risks to the business and how are they mitigated?
+    pages: [46]                     # key risks (R) and opportunities (O)
+  - q: Which large government projects in India has the company delivered?
+    pages: [18, 44]                 # BSNL, Passport Seva, Election Commission
+  - q: Does the company have a policy on cyber security and data privacy?
+    pages: [84]                     # BRSR principle 9
+  - q: TCS mein kitne log kaam karte hain?
+    pages: [7, 13, 43, 48]
+  - q: company ne shareholders ko kitna dividend diya?
+    pages: [8, 35]
