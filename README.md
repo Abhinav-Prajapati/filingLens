@@ -1,4 +1,4 @@
-# India Equity Research Copilot
+# India Equity Research filingLens
 
 Facts come from a verified database (XBRL), never from an LLM. See the V1 build plan.
 

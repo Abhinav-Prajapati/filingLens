@@ -3,8 +3,8 @@ from collections import defaultdict
 import pytest
 from pydantic import ValidationError
 
-from copilot.domain.models import Fact, Intent, PeriodSpec, QueryPlan
-from copilot.domain.registry import load_registry
+from filingLens.domain.models import Fact, Intent, PeriodSpec, QueryPlan
+from filingLens.domain.registry import load_registry
 
 REG = load_registry()
 

@@ -1,8 +1,8 @@
 import pytest
 
-from copilot.domain.models import Fact
-from copilot.storage.db import connect
-from copilot.storage.repos import FactRepo
+from filingLens.domain.models import Fact
+from filingLens.storage.db import connect
+from filingLens.storage.repos import FactRepo
 
 
 def make_fact(ticker="TCS", metric="revenue_from_operations", fy="FY24", value=100.0,

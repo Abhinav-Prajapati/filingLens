@@ -4,8 +4,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Protocol
 
-from copilot.domain.fiscal import fy_int
-from copilot.domain.models import Fact
+from filingLens.domain.fiscal import fy_int
+from filingLens.domain.models import Fact
 
 _FACT_COLS = (
     "isin ticker metric_id period_type fy quarter period_start period_end scope value unit "

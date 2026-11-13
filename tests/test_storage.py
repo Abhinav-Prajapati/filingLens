@@ -1,7 +1,7 @@
 import pytest
 
-from copilot.storage.db import SCHEMA_VERSION, connect
-from copilot.storage.repos import FactRepo
+from filingLens.storage.db import SCHEMA_VERSION, connect
+from filingLens.storage.repos import FactRepo
 from conftest import make_fact
 
 

@@ -1,7 +1,7 @@
 import pytest
 from hypothesis import given, strategies as st
 
-from copilot.domain.units import fmt_indian, rounding_factor, to_crore
+from filingLens.domain.units import fmt_indian, rounding_factor, to_crore
 
 
 @pytest.mark.parametrize("x,dec,expected", [

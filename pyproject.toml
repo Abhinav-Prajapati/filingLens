@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "copilot"
+name = "filingLens"
 version = "0.1.0"
-description = "India Equity Research Copilot"
+description = "India Equity Research filingLens"
 requires-python = ">=3.11"
 dependencies = ["pydantic>=2", "pyyaml", "pandas"]
 
@@ -16,7 +16,7 @@ dev = ["pytest", "hypothesis", "ruff", "mypy"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-copilot = ["domain/*.yaml", "storage/*.sql"]
+filingLens = ["domain/*.yaml", "storage/*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

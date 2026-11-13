@@ -2,7 +2,7 @@ import datetime as dt
 
 import pytest
 
-from copilot.domain.fiscal import (
+from filingLens.domain.fiscal import (
     fy_int, fy_label, infer_fy_from_name, ptype, quarter_of, to_date,
 )
 
