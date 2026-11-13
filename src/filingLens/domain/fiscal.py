@@ -14,6 +14,12 @@ def to_date(s: object) -> dt.date | None:
         return None
 
 
+def to_iso(s: object) -> str | None:
+    """Any date-like value -> 'YYYY-MM-DD', or None if it is not a date."""
+    d = to_date(s) if s else None
+    return d.isoformat() if d else None
+
+
 def fy_label(d: dt.date) -> str:
     y = d.year if d.month <= 3 else d.year + 1
     return f"FY{y % 100:02d}"

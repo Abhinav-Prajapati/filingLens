@@ -22,6 +22,12 @@ def to_crore(value: float, multiplier_to_inr: float) -> float:
     return value * multiplier_to_inr / 1e7
 
 
+def same_value(a: float, b: float, rel: float = 1e-6) -> bool:
+    """True when two reported figures are the same number (ignores float noise).
+    Used to tell a restatement or a conflicting value from a re-read of the same value."""
+    return abs(a - b) <= rel * max(1.0, abs(a), abs(b))
+
+
 def fmt_indian(x: float, dec: int = 0) -> str:
     """12345678 -> 1,23,45,678 (lakh/crore grouping)."""
     q = Decimal(1).scaleb(-dec)

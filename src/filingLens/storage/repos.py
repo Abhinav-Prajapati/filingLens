@@ -8,6 +8,7 @@ from typing import Protocol
 
 from filingLens.domain.fiscal import fy_int
 from filingLens.domain.models import Fact, RawFact
+from filingLens.domain.units import same_value
 
 _FACT_COLS = (
     "isin ticker metric_id period_type fy quarter period_start period_end scope value unit "
@@ -90,8 +91,7 @@ class FactRepo:
                 "SELECT orig_value FROM fact WHERE ticker=? AND metric_id=? AND period_start=? "
                 "AND period_end=? AND scope=?",
                 (f.ticker, f.metric_id, f.period_start, f.period_end, f.scope)).fetchone()
-            if prev is not None and abs(prev["orig_value"] - f.orig_value) > 1e-6 * max(
-                    1.0, abs(f.orig_value)):
+            if prev is not None and not same_value(prev["orig_value"], f.orig_value):
                 self.validation.add(
                     f.ticker, f.scope, f.period_end, "restatement", "info",
                     f"{f.metric_id}: {prev['orig_value']:g} -> {f.orig_value:g} (later filing wins)")

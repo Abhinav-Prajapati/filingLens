@@ -3,7 +3,13 @@ import datetime as dt
 import pytest
 
 from filingLens.domain.fiscal import (
-    fy_int, fy_label, infer_fy_from_name, ptype, quarter_of, to_date,
+    fy_int,
+    fy_label,
+    infer_fy_from_name,
+    ptype,
+    quarter_of,
+    to_date,
+    to_iso,
 )
 
 
@@ -66,3 +72,9 @@ def test_to_date():
     assert to_date("2024-03-31T00:00:00") == dt.date(2024, 3, 31)
     assert to_date("garbage") is None
     assert to_date(None) is None
+
+
+def test_to_iso():
+    assert to_iso("2024-03-31T00:00:00") == "2024-03-31"
+    assert to_iso(dt.date(2024, 3, 31)) == "2024-03-31"
+    assert to_iso("garbage") is None and to_iso(None) is None and to_iso("") is None

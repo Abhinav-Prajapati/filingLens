@@ -1,7 +1,8 @@
 import pytest
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
-from filingLens.domain.units import fmt_indian, rounding_factor, to_crore
+from filingLens.domain.units import fmt_indian, rounding_factor, same_value, to_crore
 
 
 @pytest.mark.parametrize("x,dec,expected", [
@@ -48,3 +49,11 @@ def test_to_crore():
     assert to_crore(2_408_930_000_000, 1.0) == pytest.approx(240_893.0)
     assert to_crore(240_893, 1e7) == pytest.approx(240_893.0)
     assert to_crore(24_089_300, 1e5) == pytest.approx(240_893.0)
+
+
+@pytest.mark.parametrize("a,b,expected", [
+    (100.0, 100.0, True), (100.0, 100.0000000001, True), (0.0, 1e-9, True),
+    (100.0, 110.0, False), (1e10, 1.01e10, False), (-5.0, 5.0, False),
+])
+def test_same_value(a, b, expected):
+    assert same_value(a, b) is expected and same_value(b, a) is expected
