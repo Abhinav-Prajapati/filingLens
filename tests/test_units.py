@@ -57,3 +57,9 @@ def test_to_crore():
 ])
 def test_same_value(a, b, expected):
     assert same_value(a, b) is expected and same_value(b, a) is expected
+
+
+def test_fmt_change_never_prints_negative_zero():
+    from filingLens.domain.units import fmt_change
+    assert fmt_change(-1e-15, pp=True) == "+0.00 pp" and fmt_change(-1e-9) == "+0.00%"
+    assert fmt_change(0.0685) == "+6.85%" and fmt_change(-0.5, pp=True) == "-0.50 pp"

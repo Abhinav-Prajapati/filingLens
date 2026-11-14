@@ -9,6 +9,25 @@ Facts come from a verified database (XBRL), never from an LLM. See the V1 build 
 - [x] Phase 4: `ingest/pdf` + `ingest/calibrate` (pages, chunks, FTS, page citations)
 - [x] Phase 5: `retrieval` (BGE-M3 embeddings in vectors.npy, FTS5 keyword, RRF hybrid search)
 - [x] Phase 6: `analytics` (YoY, CAGR, margins, trends, unit-safe comparisons)
+- [x] LLM planner (`llm/`): question -> one validated tool call (OpenAI-compatible API)
+
+## Asking questions (LLM)
+    cp .env.example .env            # set FILINGLENS_LLM_BASE_URL / _API_KEY / _MODEL
+    uv sync --extra llm
+    filinglens llm-check            # connection + a few example questions
+    filinglens ask "TCS ka munafa pichle 2 saal"
+    filinglens ask "Teeno companies ka net margin FY24"
+    filinglens ask --show-prompt    # the exact system prompt sent to the model
+
+The model only chooses a tool (get_value, get_trend, compare, search_reports, ask_user) and its
+arguments; every number comes from the database. A second call writes a short answer from the tool result:
+text answers must cite retrieved pages ([p.44]) and every number in them must appear in the
+passages or table (rounding allowed); otherwise the answer is dropped and the data is shown.
+Companies in a tool call must be named in the question (stops "Wipro" becoming Infosys).
+Flags: --evidence (show passages), --no-answer, --json. Search embeds the query on CPU when
+the GPU is held by a local LLM (FILINGLENS_EMBED_DEVICE=auto|cpu|cuda). Arguments are validated against
+registry.yaml; one correction round, then the user is asked to rephrase. Examples shown to the
+model live in `src/filingLens/llm/examples.yaml`: add one when a kind of question goes wrong.
 
 ## Getting data and analysing it
     filinglens download TCS INFY HINDUNILVR --scope consolidated   # NSE XBRL -> work/inbox

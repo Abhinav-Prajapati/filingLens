@@ -26,7 +26,7 @@ a an the is are was were be been being of in on at to for from by with and or no
 whom when where why does do did has have had many much this that these those it its their there any
 some about into over during per year years company companies
 kya kitna kitne kitni mein me ne ko ka ki ke hai hain tha thi se par aur bhi diya kiya karte karta
-""".split())
+""".split())  # noqa: SIM905 - one word list is easier to read and edit than 80 quoted strings
 
 
 @dataclass(frozen=True)

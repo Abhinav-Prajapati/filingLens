@@ -8,6 +8,8 @@
     filinglens download     [TCS INFY ...] [--fy FY24] [--list] NSE filings -> work/inbox
     filinglens trend        TCS revenue_from_operations         values, YoY, CAGR
     filinglens compare      net_margin --ticker TCS --ticker INFY   side by side
+    filinglens ask          "TCS ka revenue pichle 2 saal"      question -> tool call -> answer
+    filinglens llm-check    [-n 5]                              test the LLM connection
     filinglens index        [--db ...] [--model bge-m3|hash]   embed new chunks -> vectors.npy
     filinglens search "QUERY" [--ticker TCS] [--fy FY25] [--section mdna] [-k 5]
 """
@@ -23,7 +25,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from filingLens.domain.registry import load_registry
-from filingLens.domain.units import fmt_indian, to_crore
+from filingLens.domain.units import fmt_change, fmt_indian, fmt_value, to_crore
 from filingLens.ingest.audit import metric_coverage, period_type_counts, unmapped_tags
 from filingLens.ingest.calibrate import TickerReport
 from filingLens.ingest.errors import IngestError
@@ -347,22 +349,6 @@ def cmd_download(args: argparse.Namespace) -> int:
     return 0 if not rep.failed else 1
 
 
-def _fmt_num(v: float | None, unit: str) -> str:
-    if v is None:
-        return "-"
-    if unit == "%":
-        return f"{v:.2f}%"
-    if "crore" in unit:
-        return fmt_indian(v)
-    return f"{v:,.2f}"
-
-
-def _pct(v: float | None, pp: bool = False) -> str:
-    if v is None:
-        return "-"
-    return f"{v:+.2f} pp" if pp else f"{v * 100:+.2f}%"
-
-
 def _getter(con: sqlite3.Connection):  # type: ignore[no-untyped-def]
     repo = FactRepo(con)
     return lambda t, m, s, p: repo.get_series(t, m, scope=s, period_type=p)
@@ -385,13 +371,13 @@ def cmd_trend(args: argparse.Namespace) -> int:
         return 1
     t = build_trend(facts)
     print(f"{t.ticker}  {t.metric_id}  ({t.scope}, {t.unit})")
-    print(_table([{"period": r.label, "value": _fmt_num(r.value, t.unit),
-                   "yoy": _pct(r.change, t.is_ratio),
+    print(_table([{"period": r.label, "value": fmt_value(r.value, t.unit),
+                   "yoy": fmt_change(r.change, t.is_ratio),
                    "source": (f"p.{r.fact.page} {r.fact.verified}" if r.fact and r.fact.page
                               else (r.fact.method if r.fact else ""))} for r in t.rows],
                  ["period", "value", "yoy", "source"]))
     if t.cagr is not None and t.cagr_span:
-        print(f"CAGR {t.cagr_span[0]}-{t.cagr_span[1]}: {_pct(t.cagr)}")
+        print(f"CAGR {t.cagr_span[0]}-{t.cagr_span[1]}: {fmt_change(t.cagr)}")
     for n in notes + t.notes:
         print(f"note: {n}")
     return 0
@@ -432,7 +418,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
         row: dict[str, str] = {"period": str(period)}
         for col in c.frame.columns:
             v = None if pd.isna(r[col]) else float(r[col])
-            row[col] = _pct(v) if col == "change_vs_first" else _fmt_num(
+            row[col] = fmt_change(v) if col == "change_vs_first" else fmt_value(
                 v, "%" if c.unit in ("%", "% of total") else c.unit)
         rows.append(row)
     print(f"{axis}: {', '.join(series)}  ({args.scope}, {c.unit})")
@@ -440,6 +426,134 @@ def cmd_compare(args: argparse.Namespace) -> int:
     for note in notes + c.notes:
         print(f"note: {note}")
     return 0
+
+
+def _llm_context(con: sqlite3.Connection, vectors: Path):  # type: ignore[no-untyped-def]
+    from filingLens.llm.executor import Context
+
+    def searcher():  # type: ignore[no-untyped-def]
+        from filingLens.retrieval.index import VectorIndex
+        from filingLens.retrieval.search import Searcher
+
+        index = VectorIndex.load(vectors)
+        if index is None:
+            return Searcher(con)
+        try:
+            from filingLens.retrieval.embedder import get_embedder
+            emb = get_embedder("hash" if index.model.startswith("hash") else index.model)
+        except ImportError:                       # embed extra not installed: keyword only
+            return Searcher(con)
+        return Searcher(con, index, emb)
+
+    return Context(con, load_registry(), searcher)
+
+
+_PAGE = re.compile(r"page (\d+)(?: \(p\. (\d+)\))?")
+
+
+def _source_label(source: str) -> str:
+    """'... | mdna | scope: none | page 44 (p. 84)' -> 'p.44 (printed 84, mdna)'."""
+    m = _PAGE.search(source)
+    section = source.split(" | ")[2] if source.count(" | ") >= 2 else ""
+    if not m:
+        return source
+    return f"p.{m.group(1)}" + (f" (printed {m.group(2)}, {section})" if m.group(2)
+                                else f" ({section})")
+
+
+def _print_tool_result(res, evidence: bool = True) -> None:  # type: ignore[no-untyped-def]
+    from filingLens.llm.answer import _cell
+
+    if res.clarify:
+        print(f"? {res.clarify}")
+        return
+    if res.tool == "search_reports":
+        if evidence:
+            for row in res.rows:
+                snippet = re.sub(r"\s+", " ", row["text"])[:300]
+                print(f"[{row['rank']}] {row['source']}\n    {snippet}\n")
+        labels = list(dict.fromkeys(_source_label(r["source"]) for r in res.rows))
+        if labels:
+            print("sources: " + "; ".join(labels))
+    else:
+        print(f"{res.title}" + (f"  [{res.unit}]" if res.unit else ""))
+        if res.rows:
+            print(_table([{c: _cell(c, r.get(c), res.unit) for c in res.columns}
+                          for r in res.rows], res.columns))
+        pages = sorted({(c.get("ticker"), c.get("page")) for c in res.citations
+                        if c.get("page")}, key=str)
+        if pages:
+            print("sources: " + ", ".join(f"{t} annual report p.{p}" for t, p in pages))
+    for n in res.notes:
+        print(f"note: {n}")
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
+    from filingLens.llm.answer import Answer, compose_answer
+    from filingLens.llm.client import LLMConfig, make_client
+    from filingLens.llm.planner import ask
+    from filingLens.llm.prompt import build_system_prompt
+
+    cfg = LLMConfig.from_env()
+    with _db(args.db) as con:
+        ctx = _llm_context(con, _vectors_path(args))
+        if args.show_prompt:
+            print(build_system_prompt(ctx.registry, ctx.latest_fy()))
+            return 0
+        if cfg.missing():
+            print(f"ERROR: LLM not configured; set {', '.join(cfg.missing())} (env or .env)",
+                  file=sys.stderr)
+            return 2
+        client = make_client(cfg)
+        res = ask(args.question, client, ctx)
+        ans = (compose_answer(args.question, res.result, client)
+               if res.ok and res.result and not args.no_answer else Answer())
+        if args.json:
+            print(json.dumps({"question": res.question, "tool": res.tool, "args": res.args,
+                              "attempts": res.attempts, "errors": res.errors,
+                              "seconds": res.seconds, "answer": ans.__dict__,
+                              "result": res.result.__dict__ if res.result else None},
+                             indent=1, default=str))
+            return 0 if res.ok else 1
+        print(f"→ {res.tool}({json.dumps(res.args, ensure_ascii=False)})   "
+              f"[{res.seconds}s, attempts {res.attempts}]")
+        for e in res.errors:
+            print(f"  model error fixed by retry: {e}" if res.ok else f"  error: {e}")
+        print()
+        if ans.text:
+            print(f"{ans.text}\n")
+        elif ans.rejected:
+            print(f"(no written answer: {ans.rejected}; showing the data instead)\n")
+        if res.result:
+            show_passages = args.evidence or not ans.text
+            _print_tool_result(res.result, evidence=show_passages)
+    return 0 if res.ok else 1
+
+
+def cmd_llm_check(args: argparse.Namespace) -> int:
+    from filingLens.llm.client import LLMConfig, make_client
+    from filingLens.llm.planner import ask
+    from filingLens.llm.prompt import load_examples
+
+    cfg = LLMConfig.from_env()
+    print(f"config: {cfg.masked()}")
+    if cfg.missing():
+        print(f"ERROR: set {', '.join(cfg.missing())} (environment or .env)", file=sys.stderr)
+        return 2
+    examples = load_examples()[: args.n]
+    client = make_client(cfg)
+    ok = 0
+    with _db(args.db) as con:
+        ctx = _llm_context(con, _vectors_path(args))
+        for e in examples:
+            res = ask(e["q"], client, ctx)
+            good = res.tool == e["tool"]
+            ok += good
+            print(f"{'PASS' if good else 'FAIL'}  {res.seconds:5.2f}s  {e['q']!r} -> {res.tool} "
+                  f"{json.dumps(res.args, ensure_ascii=False) if res.args else res.errors}")
+    print(f"\n{ok}/{len(examples)} picked the expected tool (note: these examples are also in "
+          "the prompt, so this checks wiring, not accuracy)")
+    return 0 if ok == len(examples) else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -500,6 +614,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--period", default="FY", choices=["FY", "Q"])
     p.add_argument("--normalise", default="none", choices=["none", "index100", "share"])
     p.set_defaults(func=cmd_compare)
+    p = sub.add_parser("ask", help="ask a question in English or Hinglish (needs an LLM)")
+    p.add_argument("question", nargs="?", default="")
+    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--vectors")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--show-prompt", action="store_true", help="print the system prompt and exit")
+    p.add_argument("--no-answer", action="store_true", help="skip the written answer step")
+    p.add_argument("--evidence", action="store_true", help="also print the retrieved passages")
+    p.set_defaults(func=cmd_ask)
+    p = sub.add_parser("llm-check", help="test the LLM connection on a few example questions")
+    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--vectors")
+    p.add_argument("-n", type=int, default=5)
+    p.set_defaults(func=cmd_llm_check)
     p = sub.add_parser("index", help="embed new chunks into the vector file (incremental)")
     p.add_argument("--db", default="work/filingLens.db")
     p.add_argument("--vectors", help="default: vectors.npy next to the database")

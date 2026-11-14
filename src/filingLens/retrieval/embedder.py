@@ -2,12 +2,15 @@
 
 * ``BgeM3Embedder``: BAAI/bge-m3 (multilingual: English, Hindi, Hinglish), dense vectors,
   fp16 on a CUDA GPU (~1.1 GB VRAM, fits a 4 GB card), fp32 on CPU otherwise.
+  FILINGLENS_EMBED_DEVICE=auto|cpu|cuda; "auto" falls back to CPU when the GPU is full
+  (e.g. a local LLM server holds it). One query on CPU takes well under a second.
 * ``HashEmbedder``: deterministic bag-of-words hashing. Not semantic; for tests and CI,
   so nothing is downloaded there.
 """
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from typing import Protocol
 
@@ -49,16 +52,29 @@ class BgeM3Embedder:
     def __init__(self, model: str = BGE_M3, device: str | None = None, batch_size: int = 16,
                  max_tokens: int = 512):
         import torch
-        from sentence_transformers import SentenceTransformer
 
-        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        dtype = torch.float16 if device.startswith("cuda") else torch.float32
-        self.model = SentenceTransformer(model, device=device,
-                                         model_kwargs={"torch_dtype": dtype})
+        want = device or os.environ.get("FILINGLENS_EMBED_DEVICE", "auto")
+        if want == "auto":
+            want = "cuda" if torch.cuda.is_available() else "cpu"
+        try:
+            self.model = self._load(model, want)
+        except torch.OutOfMemoryError:              # GPU busy (e.g. a local LLM server)
+            torch.cuda.empty_cache()
+            want = "cpu"
+            self.model = self._load(model, want)
+        device = want
         self.model.max_seq_length = max_tokens       # chunks are <= 1,100 chars (~300 tokens)
         self.batch_size, self.device = batch_size, device
         self.name = model
         self.dim = int(self.model.get_embedding_dimension() or 1024)
+
+    @staticmethod
+    def _load(model: str, device: str):  # type: ignore[no-untyped-def]
+        import torch
+        from sentence_transformers import SentenceTransformer
+
+        dtype = torch.float16 if device.startswith("cuda") else torch.float32
+        return SentenceTransformer(model, device=device, model_kwargs={"torch_dtype": dtype})
 
     def embed(self, texts: list[str]) -> np.ndarray:
         v = self.model.encode(texts, batch_size=self.batch_size, normalize_embeddings=True,

@@ -25,12 +25,15 @@ embed = [
     "sentence-transformers>=6.3.0",
     "torch>=2.15.0",
 ]
+llm = [
+    "openai>=3.50.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-filingLens = ["domain/*.yaml", "storage/*.sql"]
+filingLens = ["domain/*.yaml", "storage/*.sql", "llm/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

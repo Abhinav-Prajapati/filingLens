@@ -1,0 +1,53 @@
+# Worked examples shown to the LLM (few-shot). Each one must pass tools.validate_call;
+# tests/test_llm.py checks that. Add a line here when the model gets a kind of question wrong.
+- q: TCS revenue FY24
+  tool: get_value
+  args: {ticker: TCS, metric: revenue_from_operations, fy: FY24}
+- q: Infosys ka munafa kitna tha 2022-23 mein?
+  tool: get_value
+  args: {ticker: INFY, metric: net_profit, fy: FY23}
+- q: HUL total assets latest
+  tool: get_value
+  args: {ticker: HINDUNILVR, metric: total_assets, fy: latest}
+- q: standalone EPS of TCS for FY23
+  tool: get_value
+  args: {ticker: TCS, metric: eps_basic, fy: FY23, scope: standalone}
+- q: Q3 FY24 revenue of TCS
+  tool: get_value
+  args: {ticker: TCS, metric: revenue_from_operations, fy: FY24, quarter: Q3}
+- q: HUL ki bikri pichle 3 saal
+  tool: get_trend
+  args: {ticker: HINDUNILVR, metric: revenue_from_operations, last_n_years: 3}
+- q: How has TCS's net margin changed over the years?
+  tool: get_trend
+  args: {ticker: TCS, metric: net_margin}
+- q: Infosys effective tax rate from FY22 to FY24
+  tool: get_trend
+  args: {ticker: INFY, metric: effective_tax_rate, from_fy: FY22, to_fy: FY24}
+- q: TCS vs Infosys revenue FY24
+  tool: compare
+  args: {tickers: [TCS, INFY], metrics: [revenue_from_operations], fys: [FY24]}
+- q: Teeno companies mein kiska profit sabse tez badha?
+  tool: compare
+  args: {tickers: [TCS, INFY, HINDUNILVR], metrics: [net_profit], normalise: index100}
+- q: TCS revenue, profit and employee cost for the last 2 years
+  tool: compare
+  args: {tickers: [TCS], metrics: [revenue_from_operations, net_profit, employee_expense], last_n_years: 2}
+- q: What did TCS say about employee attrition?
+  tool: search_reports
+  args: {query: employee attrition rate, tickers: [TCS]}
+- q: TCS ke business risks kya hain aur unhe kaise manage karte hain?
+  tool: search_reports
+  args: {query: key business risks and mitigation, tickers: [TCS], section: mdna}
+- q: profit kitna hua?
+  tool: ask_user
+  args: {question: "Which company: TCS, Infosys or Hindustan Unilever?"}
+- q: Reliance revenue FY24
+  tool: ask_user
+  args: {question: "I only have data for TCS, Infosys and Hindustan Unilever. Which of these would you like?"}
+- q: Which grew revenue faster, TCS or Infosys?
+  tool: compare
+  args: {tickers: [TCS, INFY], metrics: [revenue_from_operations], normalise: index100}
+- q: Wipro ka profit FY24
+  tool: ask_user
+  args: {question: "I only have data for TCS, Infosys and Hindustan Unilever. Which of these would you like?"}

@@ -44,3 +44,22 @@ def fmt_indian(x: float, dec: int = 0) -> str:
         ip = ",".join(groups + [tail])
     negative = x < 0 and d != 0
     return ("-" if negative else "") + ip + (("." + fp) if dec else "")
+
+
+def fmt_value(v: float | None, unit: str) -> str:
+    """Display a canonical value: crore with Indian grouping, % with 2 decimals."""
+    if v is None:
+        return "-"
+    if unit == "%":
+        return f"{v:.2f}%"
+    if "crore" in unit:
+        return fmt_indian(v)
+    return f"{v:,.2f}"
+
+
+def fmt_change(v: float | None, pp: bool = False) -> str:
+    """Display a change: a growth fraction as +6.85%, or percentage points as +0.65 pp."""
+    if v is None:
+        return "-"
+    x = round(v if pp else v * 100, 2) + 0.0      # + 0.0 turns -0.0 into 0.0 (no "-0.00")
+    return f"{x:+.2f} pp" if pp else f"{x:+.2f}%"
