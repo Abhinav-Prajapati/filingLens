@@ -13,6 +13,7 @@
     filinglens compare      net_margin --ticker TCS --ticker INFY   side by side
     filinglens ask          "TCS ka revenue pichle 2 saal"      question -> tool call -> answer
     filinglens llm-check    [-n 5]                              test the LLM connection
+    filinglens serve        [--port 8765] [--no-llm]            HTTP API (docs at /docs)
     filinglens index        [--db ...] [--model bge-m3|hash]   embed new chunks -> vectors.npy
     filinglens search "QUERY" [--ticker TCS] [--fy FY25] [--section mdna] [-k 5]
 """
@@ -552,26 +553,9 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
 
 def _llm_context(con: sqlite3.Connection, vectors: Path):  # type: ignore[no-untyped-def]
-    import functools
+    from filingLens.service import make_context
 
-    from filingLens.llm.executor import Context
-
-    @functools.cache                              # load the embedding model once per process
-    def searcher():  # type: ignore[no-untyped-def]
-        from filingLens.retrieval.index import VectorIndex
-        from filingLens.retrieval.search import Searcher
-
-        index = VectorIndex.load(vectors)
-        if index is None:
-            return Searcher(con)
-        try:
-            from filingLens.retrieval.embedder import get_embedder
-            emb = get_embedder("hash" if index.model.startswith("hash") else index.model)
-        except ImportError:                       # embed extra not installed: keyword only
-            return Searcher(con)
-        return Searcher(con, index, emb)
-
-    return Context(con, load_registry(), searcher)
+    return make_context(con, vectors, load_registry())
 
 
 _PAGE = re.compile(r"page (\d+)(?: \(p\. (\d+)\))?")
@@ -629,8 +613,10 @@ def cmd_ask(args: argparse.Namespace) -> int:
         reason = "--no-llm" if args.no_llm else f"not configured: set {', '.join(cfg.missing())}"
         r = AnswerService(ctx, llm, write_answer=not args.no_answer,
                           no_llm_reason=reason).answer(args.question)
-    if args.json:
-        print(json.dumps(r.to_dict(), indent=1, default=str, ensure_ascii=False))
+    if args.json:                          # the same typed view the API returns from /ask
+        from filingLens.views import answer_view
+
+        print(answer_view(r, ctx.registry).model_dump_json(indent=1))
         return 0 if r.ok else 1
     how = {"llm": "LLM", "rules": "rules", "search": "search"}[r.mode]
     print(f"→ {r.tool}({json.dumps(r.args, ensure_ascii=False)})   "
@@ -648,6 +634,22 @@ def cmd_ask(args: argparse.Namespace) -> int:
     if r.result:
         _print_tool_result(r.result, evidence=args.evidence or not r.answer.text)
     return 0 if r.ok or (r.result and r.result.clarify) else 1
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+
+        from filingLens.api.app import create_app
+    except ImportError:
+        print("ERROR: install the API extra: uv sync --extra api", file=sys.stderr)
+        return 2
+    app = create_app(args.db, args.vectors, llm=None if args.no_llm else "env",
+                     warm=not args.lazy)
+    print(f"filingLens API on http://{args.host}:{args.port}  (try http://{args.host}:"
+          f"{args.port}/docs)")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    return 0
 
 
 def cmd_llm_check(args: argparse.Namespace) -> int:
@@ -848,6 +850,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--vectors")
     p.add_argument("-n", type=int, default=5)
     p.set_defaults(func=cmd_llm_check)
+    p = sub.add_parser("serve", help="run the HTTP API (FastAPI; docs at /docs)")
+    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--vectors")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--no-llm", action="store_true", help="rules only, even if an LLM is set")
+    p.add_argument("--lazy", action="store_true",
+                   help="load the embedding model on the first text question, not at start")
+    p.set_defaults(func=cmd_serve)
     p = sub.add_parser("index", help="embed new chunks into the vector file (incremental)")
     p.add_argument("--db", default="work/filingLens.db")
     p.add_argument("--vectors", help="default: vectors.npy next to the database")

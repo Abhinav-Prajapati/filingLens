@@ -11,10 +11,14 @@ is, not overridden by the rules.
 """
 from __future__ import annotations
 
+import functools
+import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
+from filingLens.domain.registry import Registry
 from filingLens.llm.answer import Answer, compose_answer
 from filingLens.llm.client import LLMClient
 from filingLens.llm.executor import Context, ToolResult, execute
@@ -44,6 +48,28 @@ class Response:
         d = asdict(self)
         d["ok"] = self.ok
         return d
+
+
+def make_context(con: sqlite3.Connection, vectors: Path, registry: Registry) -> Context:
+    """Context whose searcher loads the vector index and embedding model once, on first use
+    (keyword-only search when there is no index or the embed extra is not installed)."""
+
+    @functools.cache
+    def searcher():  # type: ignore[no-untyped-def]
+        from filingLens.retrieval.index import VectorIndex
+        from filingLens.retrieval.search import Searcher
+
+        index = VectorIndex.load(vectors)
+        if index is None:
+            return Searcher(con)
+        try:
+            from filingLens.retrieval.embedder import get_embedder
+            emb = get_embedder("hash" if index.model.startswith("hash") else index.model)
+        except ImportError:
+            return Searcher(con)
+        return Searcher(con, index, emb)
+
+    return Context(con, registry, searcher)
 
 
 class AnswerService:

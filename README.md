@@ -107,6 +107,29 @@ context and prints a warning. Without this, FY facts collapse into Q4 duplicates
 
 Money values in XBRL are absolute INR (`decimals="-7"`); canonical `value` = INR crore.
 
+## HTTP API
+
+```bash
+uv sync --extra api
+filinglens serve                 # http://127.0.0.1:8765/docs  (--no-llm, --port, --lazy)
+```
+
+| endpoint | returns |
+|---|---|
+| `POST /ask` `{"question": "...", "use_llm": true}` | written answer + data view |
+| `GET /value?ticker=TCS&metric=revenue&fy=FY24` | one figure |
+| `GET /trend?ticker=TCS&metric=net_margin&last_n_years=3` | series with YoY |
+| `GET /compare?tickers=TCS&tickers=INFY&metrics=revenue_from_operations` | side by side |
+| `GET /search?q=attrition&tickers=TCS` | report passages with pages |
+| `GET /companies`, `/metrics`, `/health` | what is loaded |
+
+Every data response is a typed `DataView` (`src/filingLens/views.py`), ready for a frontend:
+`table` (typed columns + raw rows + formatted `display` rows), `chart` (suggested type and one
+series of `(period, value)` points per line, `null` = gap), `stats` (value, change, CAGR),
+`passages` and `sources`. Amounts are INR crore, changes in % (ratios: percentage points).
+Generate frontend types from `/openapi.json`. `filinglens ask --json` prints the same view.
+Allowed browser origins: `FILINGLENS_CORS` (default localhost:3000 and :5173).
+
 ## Dev
     pip install -e ".[dev]"
     pytest

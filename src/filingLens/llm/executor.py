@@ -30,6 +30,7 @@ class ToolResult:
     notes: list[str] = field(default_factory=list)
     citations: list[dict[str, Any]] = field(default_factory=list)
     clarify: str | None = None            # set by ask_user
+    stats: list[dict[str, Any]] = field(default_factory=list)   # CAGR / changes, structured
 
     @property
     def empty(self) -> bool:
@@ -113,6 +114,8 @@ def get_trend(a: GetTrend, ctx: Context) -> ToolResult:
     r.citations = [_cite(row.fact) for row in t.rows if row.fact]
     if t.cagr is not None and t.cagr_span:
         r.notes.append(f"CAGR {t.cagr_span[0]}-{t.cagr_span[1]}: {t.cagr * 100:+.2f}%")
+    if a.period == "FY":
+        r.stats = _changes({a.ticker: facts}, [row.fy for row in t.rows])
     present = len([x for x in t.rows if x.value is not None])
     if a.last_n_years and present < a.last_n_years:
         r.notes.append(f"only {present} year(s) of data available")
@@ -120,33 +123,46 @@ def get_trend(a: GetTrend, ctx: Context) -> ToolResult:
     return r
 
 
-def _change_note(series: dict[str, list[Fact]], periods: list[str]) -> str | None:
-    """'change FY23-FY24: INFY +4.70%, TCS +6.85%' from the original (not normalised)
-    values, so growth is stated in the result rather than left for the model to compute.
-    Ratios change in percentage points; spans over one year also get CAGR."""
-    parts: list[tuple[str, str, str]] = []          # (label, span, change text)
+def _changes(series: dict[str, list[Fact]], periods: list[str]) -> list[dict[str, Any]]:
+    """Change from first to last period of each series, from the original (not normalised)
+    values. Amounts: total change and CAGR in %; ratios: change in percentage points."""
+    out: list[dict[str, Any]] = []
     for label, facts in series.items():
         by_fy = {f.fy: f.value for f in facts if f.fy in periods and f.value is not None}
         have = sorted(by_fy, key=fy_int)
         if len(have) < 2:
             continue
         first, last = by_fy[have[0]], by_fy[have[-1]]
-        span = f"{have[0]}-{have[-1]}"
+        base = {"series": label, "from": have[0], "to": have[-1]}
         if facts[0].unit == RATIO_UNIT:
-            parts.append((label, span, fmt_change(last - first, pp=True)))
+            out.append(base | {"kind": "change_pp", "value": last - first, "unit": "pp"})
             continue
         g = yoy(first, last)
         if g is None:
             continue
         years = fy_int(have[-1]) - fy_int(have[0])
         c = cagr(first, last, years) if years > 1 else None
-        parts.append((label, span, fmt_change(g) + (f" (CAGR {fmt_change(c)})" if c else "")))
-    if not parts:
+        out.append(base | {"kind": "change", "value": g * 100, "unit": "%",
+                           "cagr": None if c is None else c * 100})
+    return out
+
+
+def _change_note(changes: list[dict[str, Any]]) -> str | None:
+    """'change FY23-FY24: INFY +4.70%, TCS +6.85%', so growth is stated in the result rather
+    than left for the model to compute."""
+    def text(c: dict[str, Any]) -> str:
+        if c["kind"] == "change_pp":
+            return fmt_change(c["value"], pp=True)
+        cg = c.get("cagr")
+        return fmt_change(c["value"] / 100) + (f" (CAGR {fmt_change(cg / 100)})" if cg else "")
+
+    if not changes:
         return None
-    spans = {sp for _, sp, _ in parts}
+    spans = {f"{c['from']}-{c['to']}" for c in changes}
     if len(spans) == 1:
-        return f"change {spans.pop()}: " + ", ".join(f"{lb} {ch}" for lb, _, ch in parts)
-    return "change: " + ", ".join(f"{lb} {sp} {ch}" for lb, sp, ch in parts)
+        return f"change {spans.pop()}: " + ", ".join(f"{c['series']} {text(c)}" for c in changes)
+    return "change: " + ", ".join(f"{c['series']} {c['from']}-{c['to']} {text(c)}"
+                                  for c in changes)
 
 
 def compare(a: Compare, ctx: Context) -> ToolResult:
@@ -174,9 +190,10 @@ def compare(a: Compare, ctx: Context) -> ToolResult:
             for p, rec in zip(c.frame.index, c.frame.itertuples(index=False), strict=True)]
     cites = [_cite(f) for facts in series.values() for f in facts
              if not periods or f.fy in periods]
-    change = _change_note(series, [str(r["period"]) for r in rows])
+    changes = _changes(series, [str(r["period"]) for r in rows])
+    change = _change_note(changes)
     return ToolResult("compare", title, c.unit, ["period", *cols], rows,
-                      notes + c.notes + ([change] if change else []), cites)
+                      notes + c.notes + ([change] if change else []), cites, stats=changes)
 
 
 def search_reports(a: SearchReports, ctx: Context) -> ToolResult:

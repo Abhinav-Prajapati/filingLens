@@ -8,8 +8,10 @@ SCHEMA_VERSION = 1
 _SCHEMA = Path(__file__).with_name("schema.sql")
 
 
-def connect(path: str | Path = ":memory:") -> sqlite3.Connection:
-    con = sqlite3.connect(str(path))
+def connect(path: str | Path = ":memory:", *, threads: bool = False) -> sqlite3.Connection:
+    """``threads=True``: the connection may be used from other threads (the API's worker
+    threads); the caller must serialise access."""
+    con = sqlite3.connect(str(path), check_same_thread=not threads)
     con.row_factory = sqlite3.Row
     init_schema(con)
     return con
