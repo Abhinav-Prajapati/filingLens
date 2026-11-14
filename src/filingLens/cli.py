@@ -5,7 +5,10 @@
     filinglens ingest-xbrl  FILE_OR_DIR ... [--db work/filingLens.db] [--ticker TCS]
     filinglens ingest-pdf   FILE_OR_DIR ... [--db ...] [--ticker TCS] [--force]
     filinglens ingest       [work/inbox] [--db ...] [--force]  XBRL + PDFs + calibration
-    filinglens download     [TCS INFY ...] [--fy FY24] [--list] NSE filings -> work/inbox
+    filinglens companies    [--search wipro] [--add WIPRO]      any NSE-listed company
+    filinglens status       [TCS ...]                           what data you have
+    filinglens available    TCS WIPRO [--detail]                what NSE has (have / new)
+    filinglens download     [TCS INFY ...] [--fy FY26] [--list] NSE filings -> work/inbox
     filinglens trend        TCS revenue_from_operations         values, YoY, CAGR
     filinglens compare      net_margin --ticker TCS --ticker INFY   side by side
     filinglens ask          "TCS ka revenue pichle 2 saal"      question -> tool call -> answer
@@ -24,7 +27,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
-from filingLens.domain.registry import load_registry
+from filingLens.companies import registry_with_overlay as load_registry
 from filingLens.domain.units import fmt_change, fmt_indian, fmt_value, to_crore
 from filingLens.ingest.audit import metric_coverage, period_type_counts, unmapped_tags
 from filingLens.ingest.calibrate import TickerReport
@@ -314,28 +317,64 @@ def cmd_search(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_download(args: argparse.Namespace) -> int:
+def _ensure_companies(tickers: list[str], client) -> tuple[list[str], list[str]]:  # type: ignore[no-untyped-def]
+    """Add unknown NSE symbols to work/companies.yaml from NSE's equity list.
+    Returns (added, not_found)."""
+    from filingLens.companies import (
+        DEFAULT_LIST_PATH,
+        add_companies,
+        fetch_equity_list,
+        load_equity_list,
+    )
+
+    reg = load_registry()
+    unknown = [t for t in tickers if t not in reg.companies]
+    if not unknown:
+        return [], []
+    if not DEFAULT_LIST_PATH.exists():
+        fetch_equity_list(client)
+    listed = {c.symbol: c for c in load_equity_list()}
+    found = [listed[t] for t in unknown if t in listed]
+    return add_companies(found), [t for t in unknown if t not in listed]
+
+
+def _filings(args: argparse.Namespace, dry_run: bool):  # type: ignore[no-untyped-def]
     import datetime as dt
 
     from filingLens.acquire import NSEClient, acquire
 
-    reg = load_registry()
-    tickers = [t.upper() for t in (args.tickers or list(reg.companies))]
-    unknown = [t for t in tickers if t not in reg.companies]
-    if unknown:
-        print(f"ERROR: not in registry.yaml: {unknown}", file=sys.stderr)
-        return 2
-    years = int(args.years)
+    client = NSEClient(delay=args.delay)
+    tickers = [t.upper() for t in (args.tickers or list(load_registry().companies))]
+    added, missing = _ensure_companies(tickers, client)
+    for t in added:
+        print(f"added {t} ({load_registry().companies[t].name}) to the company list")
+    if missing:
+        print(f"ERROR: not NSE symbols: {missing} (try: filinglens companies --search NAME)",
+              file=sys.stderr)
+        return None
     to_date = dt.date.today()
-    rep = acquire(NSEClient(delay=args.delay), args.inbox, tickers,
-                  periods=args.period or ["Annual"], fys=args.fy, scope=args.scope,
-                  from_date=to_date.replace(year=to_date.year - years), to_date=to_date,
-                  annual_reports=args.annual_reports, dry_run=args.list, limit=args.limit)
-    print(_table([{"ticker": f.ticker, "kind": f.kind, "period": f.period, "fy": f.fy or "?",
-                   "scope": f.scope or "?", "file": f.filename[:60]} for f in rep.found],
-                 ["ticker", "kind", "period", "fy", "scope", "file"]))
+    return acquire(client, args.inbox, tickers, sources=args.source or ["annual", "integrated"],
+                   fys=args.fy, scope=args.scope,
+                   from_date=to_date.replace(year=to_date.year - int(args.years)),
+                   to_date=to_date, annual_reports=args.annual_reports, dry_run=dry_run,
+                   limit=getattr(args, "limit", None))
+
+
+def cmd_download(args: argparse.Namespace) -> int:
+    from filingLens.catalog import mark_have
+
+    rep = _filings(args, dry_run=args.list)
+    if rep is None:
+        return 2
+    status = mark_have(rep.found, Path(args.inbox), None) if args.list else [
+        "have" if f.dest(Path(args.inbox)).exists() else "failed" for f in rep.found]
+    print(_table([{"ticker": f.ticker, "source": f.period or "report", "period": f.label,
+                   "scope": f.scope or "?", "status": st, "file": f.filename[:58]}
+                  for f, st in zip(rep.found, status, strict=True)],
+                 ["ticker", "source", "period", "scope", "status", "file"]))
     if args.list:
-        print(f"\n{len(rep.found)} files listed (dry run, nothing downloaded)")
+        print(f"\n{len(rep.found)} files listed, {status.count('new')} new "
+              "(dry run, nothing downloaded)")
     else:
         print(f"\ndownloaded {len(rep.downloaded)}  already had {len(rep.skipped)}  "
               f"failed {len(rep.failed)}  -> {args.inbox}")
@@ -347,6 +386,89 @@ def cmd_download(args: argparse.Namespace) -> int:
         print(f"STOPPED: {rep.blocked}", file=sys.stderr)
         return 1
     return 0 if not rep.failed else 1
+
+
+def cmd_available(args: argparse.Namespace) -> int:
+    from filingLens.catalog import mark_have, summarise_remote
+
+    rep = _filings(args, dry_run=True)
+    if rep is None:
+        return 2
+    with _db(args.db) as con:
+        status = mark_have(rep.found, Path(args.inbox), con)
+    print("on NSE (have = already in your inbox or database):")
+    print(_table(summarise_remote(rep.found, status),
+                 ["ticker", "full_years", "quarters", "annual_reports", "files", "new"]))
+    if args.detail:
+        print()
+        print(_table([{"ticker": f.ticker, "source": f.period or "report", "period": f.label,
+                       "scope": f.scope or "?", "status": st}
+                      for f, st in zip(rep.found, status, strict=True)],
+                     ["ticker", "source", "period", "scope", "status"]))
+    if rep.blocked:
+        print(f"STOPPED: {rep.blocked}", file=sys.stderr)
+        return 1
+    print("\nget the new files: filinglens download " + " ".join(
+        sorted({f.ticker for f in rep.found})) + " && filinglens ingest work/inbox")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    from filingLens.catalog import local_status
+
+    with _db(args.db) as con:
+        rows = local_status(con, load_registry(), _vectors_path(args))
+    if args.tickers:
+        want = {t.upper() for t in args.tickers}
+        rows = [r for r in rows if r["ticker"] in want]
+    print(_table(rows, ["ticker", "fy_facts", "latest_quarter", "metrics", "scopes",
+                        "xbrl_files", "xbrl_unusable", "annual_reports", "chunks", "indexed",
+                        "pdf_verified"]))
+    print("\nfy_facts: full years with data (count); metrics: of the 14 in the latest year; "
+          "xbrl_unusable: files with no headline data (e.g. segment-only); indexed: chunks "
+          "embedded for semantic search")
+    return 0
+
+
+def cmd_companies(args: argparse.Namespace) -> int:
+    from filingLens.acquire import NSEClient
+    from filingLens.companies import (
+        DEFAULT_LIST_PATH,
+        add_companies,
+        fetch_equity_list,
+        load_equity_list,
+        search,
+    )
+
+    if args.refresh or not DEFAULT_LIST_PATH.exists():
+        print("downloading NSE's list of listed equities ...")
+        if not fetch_equity_list(NSEClient(delay=args.delay)):
+            print("ERROR: could not download the equity list", file=sys.stderr)
+            return 1
+    listed = load_equity_list()
+    reg = load_registry()
+    if args.add:
+        by_symbol = {c.symbol: c for c in listed}
+        missing = [s for s in (a.upper() for a in args.add) if s not in by_symbol]
+        added = add_companies([by_symbol[s.upper()] for s in args.add if s.upper() in by_symbol])
+        print(f"added: {', '.join(added) or 'none (already known)'}"
+              + (f"; not NSE symbols: {missing}" if missing else ""))
+        return 0 if not missing else 2
+    if args.search:
+        rows = search(listed, args.search)
+    else:
+        rows = [c for c in listed if c.symbol in reg.companies]
+        print(f"{len(listed)} listed equities on NSE; your companies:")
+    with _db(args.db) as con:
+        have = {r[0] for r in con.execute("SELECT DISTINCT ticker FROM fact")}
+    print(_table([{"symbol": c.symbol, "name": c.name[:48], "isin": c.isin,
+                   "added": "yes" if c.symbol in reg.companies else "",
+                   "has_data": "yes" if c.symbol in have else ""} for c in rows],
+                 ["symbol", "name", "isin", "added", "has_data"]))
+    if args.search and rows:
+        print(f"\nadd one: filinglens companies --add {rows[0].symbol}   "
+              f"(or just: filinglens download {rows[0].symbol})")
+    return 0
 
 
 def _getter(con: sqlite3.Connection):  # type: ignore[no-untyped-def]
@@ -584,19 +706,41 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", default="work/filingLens.db")
     p.add_argument("--force", action="store_true", help="re-parse cached PDFs")
     p.set_defaults(func=cmd_ingest)
+    def nse_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument("tickers", nargs="*", help="NSE symbols (default: all your companies); "
+                                                  "unknown symbols are added automatically")
+        p.add_argument("--inbox", default="work/inbox")
+        p.add_argument("--source", action="append", choices=["annual", "quarterly", "integrated"],
+                       help="repeatable; default annual + integrated (integrated = Dec 2024 "
+                            "to the latest quarter)")
+        p.add_argument("--fy", action="append", default=[], help="only these FYs, e.g. FY26")
+        p.add_argument("--scope", default="both", choices=["both", "consolidated", "standalone"])
+        p.add_argument("--years", default=5, help="look back this many years (default 5)")
+        p.add_argument("--annual-reports", action="store_true", help="include annual-report PDFs")
+        p.add_argument("--delay", type=float, default=2.0, help="seconds between requests")
+
     p = sub.add_parser("download", help="download NSE filings into the inbox (polite, cached)")
-    p.add_argument("tickers", nargs="*", help="default: every company in registry.yaml")
-    p.add_argument("--inbox", default="work/inbox")
-    p.add_argument("--period", action="append", choices=["Annual", "Quarterly"],
-                   help="results period (repeatable; default Annual)")
-    p.add_argument("--fy", action="append", default=[], help="only these FYs, e.g. --fy FY24")
-    p.add_argument("--scope", default="both", choices=["both", "consolidated", "standalone"])
-    p.add_argument("--years", default=5, help="look back this many years (default 5)")
-    p.add_argument("--annual-reports", action="store_true", help="also annual-report PDFs")
+    nse_args(p)
     p.add_argument("--list", action="store_true", help="dry run: list what would be fetched")
     p.add_argument("--limit", type=int, help="download at most N files")
-    p.add_argument("--delay", type=float, default=2.0, help="seconds between requests")
     p.set_defaults(func=cmd_download)
+    p = sub.add_parser("available", help="what NSE has for these companies (have / new)")
+    nse_args(p)
+    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--detail", action="store_true", help="one row per file")
+    p.set_defaults(func=cmd_available)
+    p = sub.add_parser("status", help="what data you have, per company")
+    p.add_argument("tickers", nargs="*")
+    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--vectors")
+    p.set_defaults(func=cmd_status)
+    p = sub.add_parser("companies", help="NSE listed companies: search, add")
+    p.add_argument("--search", help="symbol or part of the name, e.g. wipro")
+    p.add_argument("--add", nargs="+", help="NSE symbols to add to your company list")
+    p.add_argument("--refresh", action="store_true", help="re-download NSE's equity list")
+    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--delay", type=float, default=2.0)
+    p.set_defaults(func=cmd_companies)
     p = sub.add_parser("trend", help="one metric over time: values, YoY, CAGR")
     p.add_argument("ticker")
     p.add_argument("metric", help="registry metric or derived: net_margin, pbt_margin, "

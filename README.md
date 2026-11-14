@@ -29,6 +29,17 @@ the GPU is held by a local LLM (FILINGLENS_EMBED_DEVICE=auto|cpu|cuda). Argument
 registry.yaml; one correction round, then the user is asked to rephrase. Examples shown to the
 model live in `src/filingLens/llm/examples.yaml`: add one when a kind of question goes wrong.
 
+## Any listed company, latest data
+    filinglens companies --search wipro          # NSE's list of all listed equities
+    filinglens available TCS WIPRO               # what NSE has: years, quarters, reports (have/new)
+    filinglens download WIPRO --scope consolidated   # unknown symbols are added automatically
+    filinglens ingest work/inbox && filinglens status
+
+Sources: annual + quarterly results (older listing) and SEBI Integrated Filing (Dec 2024 to the
+latest quarter; the March quarter also carries the full year). Added companies live in
+work/companies.yaml next to the built-in registry. Banks/NBFCs use a different taxonomy, so
+most of the 14 metrics will be missing for them.
+
 ## Getting data and analysing it
     filinglens download TCS INFY HINDUNILVR --scope consolidated   # NSE XBRL -> work/inbox
     filinglens ingest work/inbox

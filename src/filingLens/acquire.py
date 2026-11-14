@@ -1,8 +1,12 @@
 """Download filings from NSE into the inbox layout that `filinglens ingest` reads:
 
-    <inbox>/<TICKER>/xbrl/<TICKER>_<Period>_<name>.xml      results (XBRL)
+    <inbox>/<TICKER>/xbrl/<TICKER>_<Source>_<name>.xml      results (XBRL)
     <inbox>/<TICKER>/annual_report/<TICKER>_annual_FY25.pdf  annual reports
     <inbox>/sources.json                                     file name -> source URL
+
+Sources: "annual" and "quarterly" results (the older listing, up to about FY24/FY25) and
+"integrated" (SEBI Integrated Filing - Financials, every quarter from Dec 2024 to the latest;
+the March quarter also carries the full year). Default: annual + integrated.
 
 NSE has no official API. This uses the JSON endpoints its website calls, with a browser
 session (cookies from the home page), as open-source clients such as nsepython do.
@@ -25,10 +29,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from filingLens.domain.fiscal import fy_label
+from filingLens.domain.fiscal import fy_int, fy_label, quarter_of
 
 BASE = "https://www.nseindia.com"
 RESULTS_API = f"{BASE}/api/corporates-financial-results"
+INTEGRATED_API = f"{BASE}/api/integrated-filing-results"
+SOURCES = ("annual", "quarterly", "integrated")
 ANNUAL_REPORTS_API = f"{BASE}/api/annual-reports"
 WARMUP = (BASE, f"{BASE}/companies-listing/corporate-filings-financial-results")
 HEADERS = {
@@ -51,10 +57,11 @@ class Filing:
     ticker: str
     kind: str                         # "xbrl" | "annual_report"
     url: str
-    period: str = ""                  # "Annual" | "Quarterly" (results)
+    period: str = ""                  # "Annual" | "Quarterly" | "Integrated" (results)
     fy: str | None = None             # FY of the period end, when the row says
     scope: str = ""                   # "consolidated" | "standalone" | "" (unknown)
     row: dict = field(default_factory=dict, repr=False)
+    quarter: str | None = None        # Q1..Q4 for integrated filings
 
     @property
     def filename(self) -> str:
@@ -66,6 +73,11 @@ class Filing:
 
     def dest(self, inbox: Path) -> Path:
         return inbox / self.ticker / self.kind / self.filename
+
+    @property
+    def label(self) -> str:
+        """FY24, FY26 Q4, ... for listings."""
+        return (self.fy or "?") + (f" {self.quarter}" if self.quarter else "")
 
 
 # ------------------------------------------------------------------------------------------
@@ -113,6 +125,19 @@ def parse_results(payload: Any, ticker: str, period: str) -> list[Filing]:
         end = _date(r.get("toDate") or r.get("to_date") or r.get("periodEnded"))
         out.append(Filing(ticker, "xbrl", url, period, fy_label(end) if end else None,
                           _scope(r), r))
+    return out
+
+
+def parse_integrated(payload: Any, ticker: str) -> list[Filing]:
+    """Integrated Filing rows; only "Financials" (results) are kept, not "Governance"."""
+    out = []
+    for r in _rows(payload):
+        url = str(r.get("xbrl") or "")
+        if "financ" not in str(r.get("type", "")).lower() or not url.startswith("http"):
+            continue
+        end = _date(r.get("qe_Date") or r.get("qeDate"))
+        out.append(Filing(ticker, "xbrl", url, "Integrated", fy_label(end) if end else None,
+                          _scope(r), r, quarter_of(end) if end else None))
     return out
 
 
@@ -223,14 +248,32 @@ class AcquireReport:
     blocked: str | None = None
 
 
-def list_filings(client: NSEClient, tickers: Iterable[str], periods: Iterable[str],
+def _integrated_pages(client: NSEClient, ticker: str, dates: dict, max_pages: int = 10,
+                      size: int = 20) -> list[Filing]:
+    out: list[Filing] = []
+    for page in range(1, max_pages + 1):
+        payload = client.get_json(INTEGRATED_API, {"index": "equities", "symbol": ticker,
+                                                   **dates, "page": page, "size": size})
+        rows = _rows(payload)
+        out += parse_integrated(rows, ticker)
+        total = (payload or {}).get("totalCount", 0) if isinstance(payload, dict) else 0
+        if not rows or page * size >= int(total or 0):
+            break
+    return out
+
+
+def list_filings(client: NSEClient, tickers: Iterable[str], sources: Iterable[str],
                  from_date: dt.date, to_date: dt.date, annual_reports: bool) -> list[Filing]:
+    dates = {"from_date": from_date.strftime("%d-%m-%Y"), "to_date": to_date.strftime("%d-%m-%Y")}
     out: list[Filing] = []
     for t in tickers:
-        for per in periods:
-            payload = client.get_json(RESULTS_API, {
-                "index": "equities", "symbol": t, "period": per,
-                "from_date": from_date.strftime("%d-%m-%Y"), "to_date": to_date.strftime("%d-%m-%Y")})
+        for src in sources:
+            if src == "integrated":
+                out += _integrated_pages(client, t, dates)
+                continue
+            per = src.capitalize()                        # "Annual" | "Quarterly"
+            payload = client.get_json(RESULTS_API, {"index": "equities", "symbol": t,
+                                                    "period": per, **dates})
             out += parse_results(payload, t, per)
         if annual_reports:
             out += parse_annual_reports(
@@ -239,7 +282,8 @@ def list_filings(client: NSEClient, tickers: Iterable[str], periods: Iterable[st
 
 
 def acquire(client: NSEClient, inbox: str | Path, tickers: Iterable[str],
-            periods: Iterable[str] = ("Annual",), fys: Iterable[str] = (), scope: str = "both",
+            sources: Iterable[str] = ("annual", "integrated"), fys: Iterable[str] = (),
+            scope: str = "both",
             from_date: dt.date | None = None, to_date: dt.date | None = None,
             annual_reports: bool = False, dry_run: bool = False,
             limit: int | None = None) -> AcquireReport:
@@ -248,13 +292,18 @@ def acquire(client: NSEClient, inbox: str | Path, tickers: Iterable[str],
     from_date = from_date or to_date.replace(year=to_date.year - 5)
     rep = AcquireReport()
     try:
-        rep.found = select(list_filings(client, [t.upper() for t in tickers], periods,
-                                        from_date, to_date, annual_reports), fys, scope)
+        bad = [s for s in sources if s not in SOURCES]
+        if bad:
+            raise ValueError(f"unknown source(s) {bad}; use {SOURCES}")
+        oldest = fy_int(fy_label(from_date))
+        rep.found = [f for f in select(list_filings(client, [t.upper() for t in tickers], sources,
+                                                    from_date, to_date, annual_reports), fys, scope)
+                     if f.kind != "annual_report" or not f.fy or fy_int(f.fy) >= oldest]
         todo = rep.found[:limit] if limit else rep.found
         if dry_run:
             return rep
         sources_path = inbox / "sources.json"
-        sources = json.loads(sources_path.read_text()) if sources_path.exists() else {}
+        provenance = json.loads(sources_path.read_text()) if sources_path.exists() else {}
         for f in todo:
             dest = f.dest(inbox)
             if dest.exists() and dest.stat().st_size > 0:
@@ -262,9 +311,9 @@ def acquire(client: NSEClient, inbox: str | Path, tickers: Iterable[str],
                 continue
             if client.download(f.url, dest):
                 rep.downloaded.append(dest)
-                sources[dest.name] = f.url
+                provenance[dest.name] = f.url
                 sources_path.parent.mkdir(parents=True, exist_ok=True)
-                sources_path.write_text(json.dumps(sources, indent=1, sort_keys=True))
+                sources_path.write_text(json.dumps(provenance, indent=1, sort_keys=True))
             else:
                 rep.failed.append(f.url)
     except BlockedError as e:
