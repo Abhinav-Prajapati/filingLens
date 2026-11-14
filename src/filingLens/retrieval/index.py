@@ -8,13 +8,13 @@ drops rows of deleted chunks, and rebuilds everything if the model changed.
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
 from filingLens.retrieval.embedder import Embedder
+from filingLens.storage.db import Database
 
 
 def chunk_passage(context_line: str, text: str) -> str:
@@ -63,7 +63,7 @@ class IndexReport:
     rebuilt: bool
 
 
-def update_index(con: sqlite3.Connection, embedder: Embedder, path: str | Path,
+def update_index(con: Database, embedder: Embedder, path: str | Path,
                  batch: int = 256) -> tuple[VectorIndex, IndexReport]:
     """Bring the vector file in line with the chunk table and save it."""
     rows = {r[0]: chunk_passage(r[1], r[2]) for r in con.execute(

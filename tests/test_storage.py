@@ -5,25 +5,29 @@ from filingLens.storage.db import SCHEMA_VERSION, connect
 
 
 def test_schema_created_and_versioned(con):
-    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"fact", "document", "chunk", "page", "validation", "chunk_fts"} <= tables
-    assert con.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    tables = {r[0] for r in con.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()")}
+    assert {"fact", "document", "chunk", "page", "validation", "schema_info"} <= tables
+    assert con.execute("SELECT version FROM schema_info").fetchone()[0] == SCHEMA_VERSION
 
 
-def test_init_is_idempotent(tmp_path):
-    p = tmp_path / "x.db"
-    connect(p).close()
-    connect(p).close()  # no error on second init
+def test_init_is_idempotent():
+    connect().close()
+    connect().close()  # no error on second init
 
 
-def test_newer_schema_rejected(tmp_path):
-    p = tmp_path / "x.db"
-    c = connect(p)
-    c.execute("PRAGMA user_version = 99")
-    c.commit()
+def test_newer_schema_rejected():
+    c = connect()
+    c.execute("UPDATE schema_info SET version = 99")
     c.close()
     with pytest.raises(RuntimeError):
-        connect(p)
+        connect()
+
+
+def test_rows_by_position_name_and_dict(con):
+    r = con.execute("SELECT 1 AS a, 'x' AS b").fetchone()
+    assert r[0] == 1 and r["b"] == "x" and dict(r) == {"a": 1, "b": "x"}
+    assert con.execute("SELECT ? || '%' AS p", ("50",)).fetchone()["p"] == "50%"
 
 
 def test_upsert_idempotent(repo, con):

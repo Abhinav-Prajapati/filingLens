@@ -8,13 +8,13 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
 from filingLens.acquire import Filing
 from filingLens.domain.fiscal import fy_int
 from filingLens.domain.registry import Registry
+from filingLens.storage.db import Database
 
 
 def _fy_span(fys: list[str]) -> str:
@@ -26,7 +26,7 @@ def _fy_span(fys: list[str]) -> str:
     return f"{s[0]}-{s[-1]} ({len(s)})" + (f" missing {','.join(missing)}" if missing else "")
 
 
-def local_status(con: sqlite3.Connection, registry: Registry,
+def local_status(con: Database, registry: Registry,
                  vectors: Path | None = None) -> list[dict]:
     q = lambda sql, *p: con.execute(sql, p).fetchall()
     indexed: dict[str, int] = defaultdict(int)
@@ -50,7 +50,7 @@ def local_status(con: sqlite3.Connection, registry: Registry,
         reports = [r[0] or "?" for r in q("SELECT fy FROM document WHERE ticker=? AND "
                                           "doc_type='annual_report' ORDER BY fy", t)]
         chunks = q("SELECT COUNT(*) FROM chunk WHERE ticker=?", t)[0][0]
-        elig, ver = q("SELECT COUNT(*), SUM(verified='pdf') FROM fact WHERE ticker=? AND "
+        elig, ver = q("SELECT COUNT(*), COUNT(*) FILTER (WHERE verified='pdf') FROM fact WHERE ticker=? AND "
                       "period_type IN ('FY','INSTANT')", t)[0]
         out.append({
             "ticker": t, "in_registry": t in registry.companies,
@@ -64,7 +64,7 @@ def local_status(con: sqlite3.Connection, registry: Registry,
     return out
 
 
-def mark_have(filings: list[Filing], inbox: Path, con: sqlite3.Connection | None) -> list[str]:
+def mark_have(filings: list[Filing], inbox: Path, con: Database | None) -> list[str]:
     """'have' when the file is in the inbox or already ingested (same file name), else 'new'."""
     known: set[str] = set()
     reports: set[tuple[str, str]] = set()              # (ticker, fy) of ingested annual reports

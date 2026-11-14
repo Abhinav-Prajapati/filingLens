@@ -1,23 +1,33 @@
+CREATE TABLE IF NOT EXISTS schema_info(version INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS company(ticker TEXT PRIMARY KEY, isin TEXT, name TEXT, sector TEXT, aliases TEXT);
 CREATE TABLE IF NOT EXISTS document(
   doc_id TEXT PRIMARY KEY, ticker TEXT, isin TEXT, doc_type TEXT, fy TEXT, scope TEXT,
   source_url TEXT, local_path TEXT, original_name TEXT, parser TEXT, parser_ver TEXT,
-  n_pages INTEGER, parse_quality REAL, meta_json TEXT, ingested_at TEXT);
+  n_pages INTEGER, parse_quality DOUBLE PRECISION, meta_json TEXT, ingested_at TEXT);
+CREATE INDEX IF NOT EXISTS ix_document_ticker ON document(ticker, doc_type);
 CREATE TABLE IF NOT EXISTS xbrl_fact_raw(
-  id INTEGER PRIMARY KEY AUTOINCREMENT, doc_id TEXT, tag TEXT, ns TEXT, value_text TEXT, value_num REAL,
-  unit TEXT, decimals TEXT, ctx_id TEXT, period_start TEXT, period_end TEXT, instant TEXT, has_dim INTEGER);
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, doc_id TEXT, tag TEXT, ns TEXT, value_text TEXT,
+  value_num DOUBLE PRECISION, unit TEXT, decimals TEXT, ctx_id TEXT, period_start TEXT, period_end TEXT,
+  instant TEXT, has_dim INTEGER);
 CREATE INDEX IF NOT EXISTS ix_raw_doc ON xbrl_fact_raw(doc_id, has_dim);
 CREATE TABLE IF NOT EXISTS metric(metric_id TEXT PRIMARY KEY, description TEXT, kind TEXT, unit_kind TEXT, synonyms TEXT, tags TEXT);
 CREATE TABLE IF NOT EXISTS fact(
-  fact_id INTEGER PRIMARY KEY AUTOINCREMENT, isin TEXT, ticker TEXT, metric_id TEXT, period_type TEXT, fy TEXT, quarter TEXT,
-  period_start TEXT, period_end TEXT, scope TEXT, value REAL, unit TEXT, orig_value REAL, orig_unit TEXT,
+  fact_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, isin TEXT, ticker TEXT, metric_id TEXT,
+  period_type TEXT, fy TEXT, quarter TEXT, period_start TEXT, period_end TEXT, scope TEXT,
+  value DOUBLE PRECISION, unit TEXT, orig_value DOUBLE PRECISION, orig_unit TEXT,
   xbrl_tag TEXT, doc_id TEXT, pdf_doc_id TEXT, page INTEGER, verified TEXT, qa TEXT, method TEXT,
   UNIQUE(ticker, metric_id, period_start, period_end, scope));
+CREATE INDEX IF NOT EXISTS ix_fact_series ON fact(ticker, metric_id, scope, period_type);
 CREATE TABLE IF NOT EXISTS page(doc_id TEXT, page_no INTEGER, text TEXT, scope_tag TEXT, section TEXT, is_scanned INTEGER,
   PRIMARY KEY(doc_id, page_no));
+-- tsv: the keyword index (Postgres full-text search, English stemming), kept in sync by Postgres
 CREATE TABLE IF NOT EXISTS chunk(
   chunk_id TEXT PRIMARY KEY, doc_id TEXT, ticker TEXT, fy TEXT, doc_type TEXT, scope TEXT, chunk_type TEXT, section TEXT,
-  page_start INTEGER, page_end INTEGER, text TEXT, context_line TEXT, vec_idx INTEGER);
-CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(chunk_id UNINDEXED, body, tokenize='porter unicode61');
+  page_start INTEGER, page_end INTEGER, text TEXT, context_line TEXT, vec_idx INTEGER,
+  tsv tsvector GENERATED ALWAYS AS
+    (to_tsvector('english'::regconfig, coalesce(context_line, '') || ' ' || coalesce(text, ''))) STORED);
+CREATE INDEX IF NOT EXISTS ix_chunk_tsv ON chunk USING GIN (tsv);
+CREATE INDEX IF NOT EXISTS ix_chunk_doc ON chunk(doc_id);
 CREATE TABLE IF NOT EXISTS validation(
-  id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT, scope TEXT, period_end TEXT, check_name TEXT, status TEXT, detail TEXT);
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, ticker TEXT, scope TEXT, period_end TEXT,
+  check_name TEXT, status TEXT, detail TEXT);

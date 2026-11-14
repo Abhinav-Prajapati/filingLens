@@ -14,7 +14,7 @@ XBRL = Path(__file__).parent / "fixtures" / "xbrl" / "nse_consolidated_annual.xm
 
 def counts(con):
     return {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-            for t in ("document", "fact", "page", "chunk", "chunk_fts")}
+            for t in ("document", "fact", "page", "chunk")}
 
 
 def citations(con):
@@ -32,7 +32,7 @@ def test_ingest_pdf_and_calibrate(con, report_pdf):
     assert c[("total_assets", "INSTANT")] == (1, "pdf")
     assert c[("revenue_from_operations", "Q")] == (None, "no")       # quarters are not checked
     assert reports["TCS"].unit_ok and reports["TCS"].rate >= 0.6
-    assert con.execute("SELECT COUNT(*) FROM chunk_fts WHERE chunk_fts MATCH 'verticals'"
+    assert con.execute("SELECT COUNT(*) FROM chunk WHERE tsv @@ to_tsquery('english', 'verticals')"
                        ).fetchone()[0] == 1
 
 
@@ -46,7 +46,7 @@ def test_reingest_is_cached_and_idempotent(con, report_pdf):
     ingest_xbrl(con, [XBRL], REG)                 # rebuild clears citations ...
     calibrate_db(con, ["TCS"])                    # ... and calibration restores them
     assert counts(con) == first and citations(con) == cites
-    assert first["chunk"] == first["chunk_fts"]
+    assert con.execute("SELECT COUNT(*) FROM chunk WHERE tsv IS NULL").fetchone()[0] == 0
 
 
 def test_unknown_company_and_bad_pdf(con, tmp_path):
@@ -64,12 +64,11 @@ def test_inbox_and_cli(tmp_path, report_pdf, capsys):
     (inbox / "TCS" / "annual_report").mkdir()
     shutil.copy(XBRL, inbox / "TCS" / "xbrl")
     shutil.copy(report_pdf, inbox / "TCS" / "annual_report" / "annual.pdf")
-    db = tmp_path / "w.db"
-    assert main(["ingest", str(inbox), "--db", str(db)]) == 0
+    assert main(["ingest", str(inbox)]) == 0
     out = capsys.readouterr().out
     assert "parsed" in out and "unit_check" in out and " ok" in out
     assert main(["inspect-pdf", str(report_pdf)]) == 0
     assert "financial_statements" in capsys.readouterr().out
     from filingLens.storage.db import connect
-    rep = ingest_inbox(connect(db), inbox, REG)              # second run: PDF cached
+    rep = ingest_inbox(connect(), inbox, REG)              # second run: PDF cached
     assert rep.pdfs[0].skipped and rep.calibration["TCS"].verified > 0

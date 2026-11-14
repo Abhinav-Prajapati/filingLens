@@ -24,7 +24,7 @@ def searcher(tmp_path_factory):
     from filingLens.retrieval.index import update_index
     from filingLens.storage.db import connect
 
-    con = connect(":memory:")
+    con = connect()
     parsed = parse_pdf(pdf, "ar", SPEC["ticker"], "Tata Consultancy Services")
     TextRepo(con).replace("ar", parsed.pages, parsed.chunks)
     emb = BgeM3Embedder()

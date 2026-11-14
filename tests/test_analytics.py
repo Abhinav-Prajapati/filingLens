@@ -140,24 +140,21 @@ def test_cli_trend_and_compare(tmp_path, capsys):
     from filingLens.storage.db import connect
     from filingLens.storage.repos import FactRepo
 
-    db = tmp_path / "f.db"
-    con = connect(db)
+    con = connect()
     FactRepo(con).upsert_facts(series({"FY23": 225458, "FY24": 240893})
                                + series({"FY23": 42303, "FY24": 46099}, metric="net_profit")
                                + series({"FY24": 153670}, ticker="INFY"))
     con.close()
-    assert main(["trend", "TCS", "revenue_from_operations", "--db", str(db)]) == 0
+    assert main(["trend", "TCS", "revenue_from_operations"]) == 0
     out = capsys.readouterr().out
     assert "2,40,893" in out and "+6.85%" in out and "CAGR FY23-FY24: +6.85%" in out
-    assert main(["trend", "tcs", "net_margin", "--db", str(db)]) == 0
+    assert main(["trend", "tcs", "net_margin"]) == 0
     assert "19.14%" in capsys.readouterr().out
-    assert main(["compare", "revenue_from_operations", "--ticker", "TCS", "--ticker", "INFY",
-                 "--db", str(db)]) == 0
+    assert main(["compare", "revenue_from_operations", "--ticker", "TCS", "--ticker", "INFY"]) == 0
     out = capsys.readouterr().out
     assert "1,53,670" in out and "note: INFY FY23 missing" in out
-    assert main(["compare", "revenue_from_operations", "eps_basic", "--ticker", "TCS",
-                 "--db", str(db)]) in (0, 2)       # eps has no data here: compared or refused
-    assert main(["trend", "TCS", "made_up", "--db", str(db)]) == 2
+    assert main(["compare", "revenue_from_operations", "eps_basic", "--ticker", "TCS"]) in (0, 2)       # eps has no data here: compared or refused
+    assert main(["trend", "TCS", "made_up"]) == 2
 
 
 def test_fy_balance_sheet_uses_year_end_only():

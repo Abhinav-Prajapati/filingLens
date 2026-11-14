@@ -1,7 +1,6 @@
 """Repositories. Services depend on the Protocols, so tests can swap implementations."""
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Iterable
 from dataclasses import astuple, fields
 from typing import Protocol
@@ -9,11 +8,17 @@ from typing import Protocol
 from filingLens.domain.fiscal import fy_int
 from filingLens.domain.models import Chunk, Fact, Page, RawFact
 from filingLens.domain.units import same_value
+from filingLens.storage.db import Database
 
 _FACT_COLS = (
     "isin ticker metric_id period_type fy quarter period_start period_end scope value unit "
     "orig_value orig_unit xbrl_tag doc_id pdf_doc_id page verified qa method"
 ).split()
+
+
+_FACT_KEY = ("ticker", "metric_id", "period_start", "period_end", "scope")
+_FACT_UPSERT = (f"ON CONFLICT ({','.join(_FACT_KEY)}) DO UPDATE SET "
+                + ",".join(f"{c}=excluded.{c}" for c in _FACT_COLS if c not in _FACT_KEY))
 
 
 class FactRepoProtocol(Protocol):
@@ -32,7 +37,7 @@ class FactRepoProtocol(Protocol):
 
 
 class ValidationRepo:
-    def __init__(self, con: sqlite3.Connection):
+    def __init__(self, con: Database):
         self.con = con
 
     def add(self, ticker: str, scope: str | None, period_end: str, check: str,
@@ -44,11 +49,11 @@ class ValidationRepo:
 
     def add_many(self, rows: Iterable[tuple[str, str | None, str, str, str, str]]) -> int:
         """rows: (ticker, scope, period_end, check_name, status, detail)."""
-        cur = self.con.executemany(
+        rows = list(rows)
+        self.con.executemany(
             "INSERT INTO validation(ticker,scope,period_end,check_name,status,detail) VALUES (?,?,?,?,?,?)",
-            list(rows))
-        self.con.commit()
-        return cur.rowcount
+            rows)
+        return len(rows)
 
     def clear(self, tickers: Iterable[str], checks: Iterable[str] | None = None,
               exclude_checks: Iterable[str] = ()) -> None:
@@ -79,7 +84,7 @@ class ValidationRepo:
 
 
 class FactRepo:
-    def __init__(self, con: sqlite3.Connection):
+    def __init__(self, con: Database):
         self.con = con
         self.validation = ValidationRepo(con)
 
@@ -100,8 +105,8 @@ class FactRepo:
             row = f.model_dump()
             row["isin"] = isin_by_ticker.get(f.ticker, "")
             self.con.execute(
-                f"INSERT OR REPLACE INTO fact({','.join(_FACT_COLS)}) "
-                f"VALUES ({','.join('?' * len(_FACT_COLS))})",
+                f"INSERT INTO fact({','.join(_FACT_COLS)}) "
+                f"VALUES ({','.join('?' * len(_FACT_COLS))}) {_FACT_UPSERT}",
                 [row[c] for c in _FACT_COLS])
             n += 1
         self.con.commit()
@@ -120,7 +125,7 @@ class FactRepo:
             sql += " AND CAST(substr(fy,3) AS INTEGER) <= ?"
             params.append(fy_int(fy_to))
         rows = self.con.execute(sql + " ORDER BY period_end", params).fetchall()
-        return [Fact(**{k: r[k] for k in r.keys() if k in Fact.model_fields})  # noqa: SIM118 - sqlite3.Row iterates values
+        return [Fact(**{k: r[k] for k in r.keys() if k in Fact.model_fields})  # noqa: SIM118 - Row iterates values
                 for r in rows]
 
     def list_facts(self, tickers: Iterable[str] | None = None) -> list[Fact]:
@@ -130,7 +135,7 @@ class FactRepo:
             sql += f" WHERE ticker IN ({','.join('?' * len(tk))})"
             params = tk
         rows = self.con.execute(sql + " ORDER BY ticker, metric_id, period_end", params).fetchall()
-        return [Fact(**{k: r[k] for k in r.keys() if k in Fact.model_fields})  # noqa: SIM118 - sqlite3.Row iterates values
+        return [Fact(**{k: r[k] for k in r.keys() if k in Fact.model_fields})  # noqa: SIM118 - Row iterates values
                 for r in rows]
 
     def delete_facts(self, tickers: Iterable[str], method: str = "xbrl") -> int:
@@ -177,7 +182,8 @@ class FactRepo:
     def coverage(self) -> list[dict]:
         rows = self.con.execute(
             "SELECT ticker, scope, metric_id, period_type, COUNT(*) n, MIN(fy) first_fy, "
-            "MAX(fy) last_fy, SUM(verified='pdf') pdf_verified, SUM(qa!='ok') qa_flags "
+            "MAX(fy) last_fy, COUNT(*) FILTER (WHERE verified='pdf') pdf_verified, "
+            "COUNT(*) FILTER (WHERE qa<>'ok') qa_flags "
             "FROM fact GROUP BY 1,2,3,4 ORDER BY 1,2,3,4").fetchall()
         return [dict(r) for r in rows]
 
@@ -189,7 +195,7 @@ _DOC_COLS = ("doc_id ticker isin doc_type fy scope source_url local_path origina
 class DocumentRepo:
     """Registered source files. doc_id = sha256 of the file bytes."""
 
-    def __init__(self, con: sqlite3.Connection):
+    def __init__(self, con: Database):
         self.con = con
 
     def upsert(self, doc: dict) -> None:
@@ -223,7 +229,7 @@ _RAW_COLS = [f.name for f in fields(RawFact)]
 class RawFactRepo:
     """Every fact of every XBRL file, as parsed (table xbrl_fact_raw)."""
 
-    def __init__(self, con: sqlite3.Connection):
+    def __init__(self, con: Database):
         self.con = con
 
     def replace(self, doc_id: str, rows: list[RawFact]) -> int:
@@ -249,33 +255,31 @@ class RawFactRepo:
 
 
 class TextRepo:
-    """Pages and chunks of PDF documents. Keeps the chunk_fts keyword index in sync."""
+    """Pages and chunks of PDF documents. The keyword index (chunk.tsv) is a generated column,
+    so Postgres keeps it in sync."""
 
-    def __init__(self, con: sqlite3.Connection):
+    def __init__(self, con: Database):
         self.con = con
 
     def replace(self, doc_id: str, pages: list[Page], chunks: list[Chunk]) -> None:
-        old = [(r[0],) for r in self.con.execute("SELECT chunk_id FROM chunk WHERE doc_id=?",
-                                                  (doc_id,))]
-        self.con.executemany("DELETE FROM chunk_fts WHERE chunk_id=?", old)
-        self.con.execute("DELETE FROM chunk WHERE doc_id=?", (doc_id,))
-        self.con.execute("DELETE FROM page WHERE doc_id=?", (doc_id,))
-        self.con.executemany("INSERT INTO page VALUES (?,?,?,?,?,?)", [astuple(p) for p in pages])
-        self.con.executemany(
-            f"INSERT INTO chunk({','.join(_CHUNK_COLS)}) VALUES ({','.join('?' * len(_CHUNK_COLS))})",
-            [astuple(c) for c in chunks])
-        self.con.executemany("INSERT INTO chunk_fts(chunk_id, body) VALUES (?,?)",
-                             [(c.chunk_id, f"{c.context_line}\n{c.text}") for c in chunks])
-        self.con.commit()
+        with self.con.transaction():
+            self.con.execute("DELETE FROM chunk WHERE doc_id=?", (doc_id,))
+            self.con.execute("DELETE FROM page WHERE doc_id=?", (doc_id,))
+            self.con.executemany("INSERT INTO page VALUES (?,?,?,?,?,?)",
+                                 [astuple(p) for p in pages])
+            self.con.executemany(
+                f"INSERT INTO chunk({','.join(_CHUNK_COLS)}) "
+                f"VALUES ({','.join('?' * len(_CHUNK_COLS))})", [astuple(c) for c in chunks])
 
     def page_texts(self, tickers: Iterable[str], doc_type: str = "annual_report") -> list[dict]:
         """Chunk text grouped by (doc, page, scope, section): one row per panel of a page."""
         tk = list(tickers)
         sql = ("SELECT c.doc_id, c.ticker, c.fy, c.page_start AS page, c.scope, c.section, "
-               "group_concat(c.text, char(10)) AS text FROM chunk c "
+               "string_agg(c.text, chr(10) ORDER BY c.chunk_id) AS text FROM chunk c "
                "JOIN document d ON d.doc_id = c.doc_id "
                f"WHERE d.doc_type=? AND c.ticker IN ({','.join('?' * len(tk))}) "
-               "GROUP BY c.doc_id, c.page_start, c.scope, c.section ORDER BY c.doc_id, page")
+               "GROUP BY c.doc_id, c.ticker, c.fy, c.page_start, c.scope, c.section "
+               "ORDER BY c.doc_id, page")
         return [dict(r) for r in self.con.execute(sql, [doc_type, *tk])]
 
     def counts(self, doc_id: str) -> dict[str, int]:

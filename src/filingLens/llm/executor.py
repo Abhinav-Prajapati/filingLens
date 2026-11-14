@@ -3,7 +3,6 @@ a plain result: rows of raw values, unit, notes and citations. No LLM involved h
 from __future__ import annotations
 
 import math
-import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,6 +16,7 @@ from filingLens.domain.models import Fact
 from filingLens.domain.registry import Registry
 from filingLens.domain.units import fmt_change
 from filingLens.llm.tools import AskUser, Compare, GetTrend, GetValue, SearchReports
+from filingLens.storage.db import Database
 from filingLens.storage.repos import FactRepo
 
 
@@ -39,7 +39,7 @@ class ToolResult:
 
 @dataclass
 class Context:
-    con: sqlite3.Connection
+    con: Database
     registry: Registry
     searcher: Callable[[], Any] | None = None    # lazy: loads the embedding model on demand
     _labels: dict[str, str] = field(default_factory=dict, repr=False)

@@ -7,6 +7,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.7
+        env:
+          POSTGRES_USER: filinglens
+          POSTGRES_PASSWORD: filinglens
+          POSTGRES_DB: filinglens_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U filinglens" --health-interval 5s --health-timeout 3s
+          --health-retries 20
+    env:
+      # each test gets its own schema in this database (tests/conftest.py)
+      FILINGLENS_TEST_DATABASE_URL: postgresql://filinglens:filinglens@localhost:5432/filinglens_test
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

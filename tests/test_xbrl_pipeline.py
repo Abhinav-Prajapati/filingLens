@@ -159,7 +159,6 @@ def test_cli_ingest_folder(tmp_path, capsys):
     inbox = tmp_path / "inbox"
     inbox.mkdir()
     shutil.copy(ANNUAL, inbox / "TCS_Annual_1.xml")
-    db = tmp_path / "w" / "t.db"
-    assert main(["ingest-xbrl", str(inbox), "--db", str(db)]) == 0
+    assert main(["ingest-xbrl", str(inbox)]) == 0
     out = capsys.readouterr().out
-    assert "FY coverage" in out and "revenue_from_operations" in out and db.exists()
+    assert "FY coverage" in out and "revenue_from_operations" in out

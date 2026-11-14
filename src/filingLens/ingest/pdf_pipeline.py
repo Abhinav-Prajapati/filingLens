@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,6 +21,7 @@ from filingLens.ingest.pdf import PARSER_NAME, PARSER_VERSION, parse_pdf
 from filingLens.ingest.pipeline import IngestReport, ingest_xbrl
 from filingLens.ingest.utils.files import XBRL_SUFFIXES, sha256_file
 from filingLens.ingest.xbrl import XbrlMeta, resolve_ticker
+from filingLens.storage.db import Database
 from filingLens.storage.repos import DocumentRepo, FactRepo, TextRepo
 
 
@@ -57,7 +58,7 @@ def pdf_doc_type(name: str) -> str:
     return "annual_report"
 
 
-def ingest_pdf(con: sqlite3.Connection, path: str | Path, registry: Registry,
+def ingest_pdf(con: Database, path: str | Path, registry: Registry,
                ticker: str | None = None, doc_type: str | None = None,
                force: bool = False) -> PdfReport:
     p = Path(path)
@@ -94,7 +95,7 @@ def ingest_pdf(con: sqlite3.Connection, path: str | Path, registry: Registry,
     return rep
 
 
-def calibrate_db(con: sqlite3.Connection, tickers: list[str]) -> dict[str, TickerReport]:
+def calibrate_db(con: Database, tickers: list[str]) -> dict[str, TickerReport]:
     """Recompute citations for these tickers from stored facts and annual-report text."""
     facts = FactRepo(con).list_facts(tickers)
     pages = [PageText(**r) for r in TextRepo(con).page_texts(tickers)]
@@ -104,15 +105,17 @@ def calibrate_db(con: sqlite3.Connection, tickers: list[str]) -> dict[str, Ticke
     return reports
 
 
-def ingest_inbox(con: sqlite3.Connection, inbox: str | Path, registry: Registry,
-                 force: bool = False) -> InboxReport:
-    """inbox/<TICKER>/** : XBRL files first (facts), then PDFs (text), then calibration."""
+def ingest_inbox(con: Database, inbox: str | Path, registry: Registry,
+                 force: bool = False, tickers: Iterable[str] | None = None) -> InboxReport:
+    """inbox/<TICKER>/** : XBRL files first (facts), then PDFs (text), then calibration.
+    ``tickers``: only these companies' folders (default: every registered company)."""
     out = InboxReport()
+    only = {t.upper() for t in tickers} if tickers is not None else None
     xbrl: list[tuple[Path, str]] = []
     pdfs: list[tuple[Path, str]] = []
     for tdir in sorted(Path(inbox).iterdir()):
         t = tdir.name.upper()
-        if not tdir.is_dir() or t not in registry.companies:
+        if not tdir.is_dir() or t not in registry.companies or (only is not None and t not in only):
             continue
         for f in sorted(tdir.rglob("*")):
             if f.suffix.lower() in (*XBRL_SUFFIXES, ".zip"):

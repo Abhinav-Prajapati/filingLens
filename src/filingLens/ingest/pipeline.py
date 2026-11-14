@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +34,7 @@ from filingLens.ingest.xbrl import (
     resolve_ticker,
     xbrl_meta,
 )
+from filingLens.storage.db import Database
 from filingLens.storage.repos import DocumentRepo, FactRepo, RawFactRepo
 
 RESTATEMENT = "restatement"
@@ -69,7 +69,7 @@ class IngestReport:
         return all(f.error is None for f in self.files)
 
 
-def register_xbrl(con: sqlite3.Connection, path: str | Path, registry: Registry,
+def register_xbrl(con: Database, path: str | Path, registry: Registry,
                   ticker: str | None = None) -> FileReport:
     """Parse one file and store its document row and raw facts. Does not build facts."""
     p = Path(path)
@@ -108,7 +108,7 @@ def _meta_from_json(s: str | None) -> XbrlMeta:
     return XbrlMeta.from_dict(json.loads(s or "{}"))
 
 
-def load_filings(con: sqlite3.Connection, tickers: list[str],
+def load_filings(con: Database, tickers: list[str],
                  registry: Registry) -> list[FilingFacts]:
     raw = RawFactRepo(con)
     out = []
@@ -119,7 +119,7 @@ def load_filings(con: sqlite3.Connection, tickers: list[str],
     return out
 
 
-def rebuild_facts(con: sqlite3.Connection, tickers: list[str], registry: Registry
+def rebuild_facts(con: Database, tickers: list[str], registry: Registry
                   ) -> tuple[BuildResult, list[CheckResult], list[FilingFacts]]:
     """Rebuild canonical facts and validation rows for these tickers from stored raw facts."""
     filings = load_filings(con, tickers, registry)
@@ -139,7 +139,7 @@ def rebuild_facts(con: sqlite3.Connection, tickers: list[str], registry: Registr
     return built, checks, filings
 
 
-def ingest_xbrl(con: sqlite3.Connection, paths: Sequence[str | Path], registry: Registry,
+def ingest_xbrl(con: Database, paths: Sequence[str | Path], registry: Registry,
                 ticker: str | None = None) -> IngestReport:
     report = IngestReport()
     for p in paths:

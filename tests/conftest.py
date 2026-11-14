@@ -1,8 +1,54 @@
+import os
+import uuid
+from urllib.parse import quote, urlsplit, urlunsplit
+
+import psycopg
 import pytest
 
+from filingLens.config import database_url
 from filingLens.domain.models import Fact
 from filingLens.storage.db import connect
 from filingLens.storage.repos import FactRepo
+
+# Tests run against Postgres (docker compose up -d postgres), in a database of their own
+# (FILINGLENS_TEST_DATABASE_URL, default: the app's server with database "filinglens_test").
+# Every test gets an empty schema, dropped afterwards; connect() with no URL lands in it.
+
+
+def _test_url() -> str:
+    url = os.environ.get("FILINGLENS_TEST_DATABASE_URL")
+    if url:
+        return url
+    parts = urlsplit(database_url())
+    return urlunsplit(parts._replace(path="/filinglens_test"))
+
+
+@pytest.fixture(scope="session")
+def _test_db() -> str:
+    url = _test_url()
+    try:
+        psycopg.connect(url, connect_timeout=5).close()
+    except psycopg.OperationalError as e:
+        if "does not exist" not in str(e):
+            pytest.exit(f"Postgres not reachable for tests ({e}). Start it: "
+                        "docker compose up -d postgres", returncode=3)
+        admin = urlunsplit(urlsplit(url)._replace(path="/postgres"))
+        with psycopg.connect(admin, autocommit=True) as c:
+            c.execute(f'CREATE DATABASE "{urlsplit(url).path.lstrip("/")}"')
+    return url
+
+
+@pytest.fixture(autouse=True)
+def _pg_schema(_test_db, monkeypatch):
+    schema = f"t_{uuid.uuid4().hex[:12]}"
+    with psycopg.connect(_test_db, autocommit=True) as c:
+        c.execute(f"CREATE SCHEMA {schema}")
+    sep = "&" if "?" in _test_db else "?"
+    monkeypatch.setenv("FILINGLENS_DATABASE_URL",
+                       f"{_test_db}{sep}options={quote(f'-csearch_path={schema}')}")
+    yield schema
+    with psycopg.connect(_test_db, autocommit=True) as c:
+        c.execute(f"DROP SCHEMA {schema} CASCADE")
 
 
 def make_fact(ticker="TCS", metric="revenue_from_operations", fy="FY24", value=100.0,
@@ -16,7 +62,7 @@ def make_fact(ticker="TCS", metric="revenue_from_operations", fy="FY24", value=1
 
 @pytest.fixture
 def con():
-    c = connect(":memory:")
+    c = connect()
     yield c
     c.close()
 

@@ -2,9 +2,9 @@
 
     filinglens inspect      FILE.xml [--ticker TCS] [--json]   parse one XBRL file, no database
     filinglens inspect-pdf  FILE.pdf [--page 91]               parse one PDF, no database
-    filinglens ingest-xbrl  FILE_OR_DIR ... [--db work/filingLens.db] [--ticker TCS]
-    filinglens ingest-pdf   FILE_OR_DIR ... [--db ...] [--ticker TCS] [--force]
-    filinglens ingest       [work/inbox] [--db ...] [--force]  XBRL + PDFs + calibration
+    filinglens ingest-xbrl  FILE_OR_DIR ... [--ticker TCS]
+    filinglens ingest-pdf   FILE_OR_DIR ... [--ticker TCS] [--force]
+    filinglens ingest       [work/inbox] [--force]  XBRL + PDFs + calibration
     filinglens companies    [--search wipro] [--add WIPRO]      any NSE-listed company
     filinglens status       [TCS ...]                           what data you have
     filinglens available    TCS WIPRO [--detail]                what NSE has (have / new)
@@ -14,7 +14,8 @@
     filinglens ask          "TCS ka revenue pichle 2 saal"      question -> tool call -> answer
     filinglens llm-check    [-n 5]                              test the LLM connection
     filinglens serve        [--port 8765] [--no-llm]            HTTP API (docs at /docs)
-    filinglens index        [--db ...] [--model bge-m3|hash]   embed new chunks -> vectors.npy
+    filinglens users create-admin EMAIL                        make (or promote) an admin
+    filinglens index        [--model bge-m3|hash]   embed new chunks -> vectors.npy
     filinglens search "QUERY" [--ticker TCS] [--fy FY25] [--section mdna] [-k 5]
 """
 from __future__ import annotations
@@ -22,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sqlite3
 import sys
 import time
 from collections.abc import Iterator, Sequence
@@ -54,7 +54,10 @@ from filingLens.ingest.xbrl import (
     resolve_ticker,
     xbrl_meta,
 )
+from filingLens.storage.db import Database
 from filingLens.storage.repos import FactRepo
+
+DATA_DIR = Path("work")          # equity list, company overlay, inbox, vectors
 
 INBOX_SUFFIXES = (*XBRL_SUFFIXES, ".zip")
 
@@ -150,18 +153,17 @@ def _expand(paths: Sequence[str], suffixes: Sequence[str] = INBOX_SUFFIXES) -> l
 
 
 @contextmanager
-def _db(path: str) -> Iterator[sqlite3.Connection]:
+def _db(url: str | None) -> Iterator[Database]:
     from filingLens.storage.db import connect
 
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    con = connect(path)
+    con = connect(url)
     try:
         yield con
     finally:
         con.close()
 
 
-def _print_xbrl(con: sqlite3.Connection, rep: IngestReport) -> None:
+def _print_xbrl(con: Database, rep: IngestReport) -> None:
     print(_table([{"file": Path(f.path).name[:48], "ticker": f.ticker or "", "type": f.doc_type,
                    "scope": f.scope, "fy": f.fy or "", "period_end": f.period_end, "raw": f.n_raw,
                    "facts": f.n_facts, "missing": len(f.missing), "error": f.error or ""}
@@ -206,7 +208,7 @@ def _print_calibration(reports: dict[str, TickerReport]) -> None:
 
 def cmd_ingest_xbrl(args: argparse.Namespace) -> int:
     reg = load_registry()
-    with _db(args.db) as con:
+    with _db(args.database_url) as con:
         rep = ingest_xbrl(con, _expand(args.paths), reg, ticker=args.ticker)
         _print_xbrl(con, rep)
         if rep.tickers:                     # rebuilding facts cleared their citations
@@ -216,7 +218,7 @@ def cmd_ingest_xbrl(args: argparse.Namespace) -> int:
 
 def cmd_ingest_pdf(args: argparse.Namespace) -> int:
     reg = load_registry()
-    with _db(args.db) as con:
+    with _db(args.database_url) as con:
         reps = [ingest_pdf(con, p, reg, ticker=args.ticker, force=args.force)
                 for p in _expand(args.paths, (".pdf",))]
         _print_pdfs(reps)
@@ -228,7 +230,7 @@ def cmd_ingest_pdf(args: argparse.Namespace) -> int:
 
 def cmd_ingest(args: argparse.Namespace) -> int:
     reg = load_registry()
-    with _db(args.db) as con:
+    with _db(args.database_url) as con:
         try:
             rep = ingest_inbox(con, args.inbox, reg, force=args.force)
         except IngestError as e:
@@ -273,14 +275,14 @@ def cmd_inspect_pdf(args: argparse.Namespace) -> int:
 
 
 def _vectors_path(args: argparse.Namespace) -> Path:
-    return Path(args.vectors) if args.vectors else Path(args.db).parent / "vectors.npy"
+    return Path(args.vectors) if args.vectors else DATA_DIR / "vectors.npy"
 
 
 def cmd_index(args: argparse.Namespace) -> int:
     from filingLens.retrieval.embedder import get_embedder
     from filingLens.retrieval.index import update_index
 
-    with _db(args.db) as con:
+    with _db(args.database_url) as con:
         n = con.execute("SELECT COUNT(*) FROM chunk").fetchone()[0]
         if not n:
             print("ERROR: no chunks in the database; run `filinglens ingest` first",
@@ -300,7 +302,7 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     filters = SearchFilters(tuple(t.upper() for t in args.ticker), tuple(args.fy),
                             tuple(args.doc_type), tuple(args.scope), tuple(args.section))
-    with _db(args.db) as con:
+    with _db(args.database_url) as con:
         index = None if args.keyword_only else VectorIndex.load(_vectors_path(args))
         emb = None
         if index is not None:
@@ -396,7 +398,7 @@ def cmd_available(args: argparse.Namespace) -> int:
     rep = _filings(args, dry_run=True)
     if rep is None:
         return 2
-    with _db(args.db) as con:
+    with _db(args.database_url) as con:
         status = mark_have(rep.found, Path(args.inbox), con)
     print("on NSE (have = already in your inbox or database):")
     print(_table(summarise_remote(rep.found, status),
@@ -418,7 +420,7 @@ def cmd_available(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     from filingLens.catalog import local_status
 
-    with _db(args.db) as con:
+    with _db(args.database_url) as con:
         rows = local_status(con, load_registry(), _vectors_path(args))
     if args.tickers:
         want = {t.upper() for t in args.tickers}
@@ -461,7 +463,7 @@ def cmd_companies(args: argparse.Namespace) -> int:
     else:
         rows = [c for c in listed if c.symbol in reg.companies]
         print(f"{len(listed)} listed equities on NSE; your companies:")
-    with _db(args.db) as con:
+    with _db(args.database_url) as con:
         have = {r[0] for r in con.execute("SELECT DISTINCT ticker FROM fact")}
     print(_table([{"symbol": c.symbol, "name": c.name[:48], "isin": c.isin,
                    "added": "yes" if c.symbol in reg.companies else "",
@@ -473,7 +475,7 @@ def cmd_companies(args: argparse.Namespace) -> int:
     return 0
 
 
-def _getter(con: sqlite3.Connection):  # type: ignore[no-untyped-def]
+def _getter(con: Database):  # type: ignore[no-untyped-def]
     repo = FactRepo(con)
     return lambda t, m, s, p: repo.get_series(t, m, scope=s, period_type=p)
 
@@ -483,7 +485,7 @@ def cmd_trend(args: argparse.Namespace) -> int:
     from filingLens.analytics.trend import build_trend
 
     reg = load_registry()
-    with _db(args.db) as con:
+    with _db(args.database_url) as con:
         try:
             facts, notes = load_series(_getter(con), reg, args.ticker.upper(), args.metric,
                                        args.scope, args.period)
@@ -521,7 +523,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
     pairs = ([(t, args.metrics[0], t) for t in tickers] if axis == "companies"
              else [(tickers[0], m, m) for m in args.metrics])
     series, notes = {}, []
-    with _db(args.db) as con:
+    with _db(args.database_url) as con:
         get = _getter(con)
         for t, m, label in pairs:
             try:
@@ -552,7 +554,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _llm_context(con: sqlite3.Connection, vectors: Path):  # type: ignore[no-untyped-def]
+def _llm_context(con: Database, vectors: Path):  # type: ignore[no-untyped-def]
     from filingLens.service import make_context
 
     return make_context(con, vectors, load_registry())
@@ -606,7 +608,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
     from filingLens.service import AnswerService, make_guard
 
     cfg = LLMConfig.from_env()
-    with _db(args.db) as con:
+    with _db(args.database_url) as con:
         ctx = _llm_context(con, _vectors_path(args))
         if args.show_prompt:
             print(build_system_prompt(ctx.registry, ctx.latest_fy()))
@@ -646,12 +648,55 @@ def cmd_serve(args: argparse.Namespace) -> int:
     except ImportError:
         print("ERROR: install the API extra: uv sync --extra api", file=sys.stderr)
         return 2
-    app = create_app(args.db, args.vectors, llm=None if args.no_llm else "env",
+    app = create_app(args.database_url, args.vectors, llm=None if args.no_llm else "env",
                      warm=not args.lazy)
     print(f"filingLens API on http://{args.host}:{args.port}  (try http://{args.host}:"
           f"{args.port}/docs)")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
+
+
+def cmd_users(args: argparse.Namespace) -> int:
+    import asyncio
+    import getpass
+
+    try:
+        from fastapi_users import InvalidPasswordException
+        from pydantic import ValidationError
+
+        from filingLens.api.auth import make_auth
+    except ImportError:
+        print("ERROR: install the API extra: uv sync --extra api", file=sys.stderr)
+        return 2
+    auth = make_auth(args.database_url)
+
+    async def run() -> int:
+        try:
+            await auth.create_admin(args.email, None)
+            print(f"{args.email} is now an admin")
+            return 0
+        except ValueError:
+            pass                                  # no such account yet: ask for a password
+        finally:
+            await auth.close()
+        password = getpass.getpass(f"New password for {args.email}: ")
+        if password != getpass.getpass("Again: "):
+            print("ERROR: the passwords differ", file=sys.stderr)
+            return 1
+        try:
+            await auth.create_admin(args.email, password)
+        except InvalidPasswordException as e:
+            print(f"ERROR: {e.reason}", file=sys.stderr)
+            return 1
+        except ValidationError:
+            print(f"ERROR: {args.email!r} is not a valid email address", file=sys.stderr)
+            return 1
+        finally:
+            await auth.close()
+        print(f"created admin {args.email}")
+        return 0
+
+    return asyncio.run(run())
 
 
 def cmd_llm_check(args: argparse.Namespace) -> int:
@@ -667,7 +712,7 @@ def cmd_llm_check(args: argparse.Namespace) -> int:
     examples = load_examples()[: args.n]
     client = make_client(cfg)
     ok = 0
-    with _db(args.db) as con:
+    with _db(args.database_url) as con:
         ctx = _llm_context(con, _vectors_path(args))
         for e in examples:
             res = ask(e["q"], client, ctx)
@@ -698,7 +743,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         modes = ["rules"]
     out_dir, code = Path(args.out), 0
     for mode in modes:
-        with _db(args.db) as con:
+        with _db(args.database_url) as con:
             ctx = _llm_context(con, _vectors_path(args))
             llm = make_client(cfg) if mode == "llm" else None
             svc = AnswerService(ctx, llm, no_llm_reason="rules mode",
@@ -765,14 +810,14 @@ def build_parser() -> argparse.ArgumentParser:
                             ("ingest-pdf", cmd_ingest_pdf, "ingest PDF files or folders")):
         p = sub.add_parser(name, help=hlp)
         p.add_argument("paths", nargs="+")
-        p.add_argument("--db", default="work/filingLens.db")
+        p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
         p.add_argument("--ticker", help="force the ticker for every file")
         if name == "ingest-pdf":
             p.add_argument("--force", action="store_true", help="re-parse cached PDFs")
         p.set_defaults(func=func)
     p = sub.add_parser("ingest", help="ingest inbox/<TICKER>/ (XBRL + PDFs) and calibrate")
     p.add_argument("inbox", nargs="?", default="work/inbox")
-    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
     p.add_argument("--force", action="store_true", help="re-parse cached PDFs")
     p.set_defaults(func=cmd_ingest)
     def nse_args(p: argparse.ArgumentParser) -> None:
@@ -795,26 +840,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_download)
     p = sub.add_parser("available", help="what NSE has for these companies (have / new)")
     nse_args(p)
-    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
     p.add_argument("--detail", action="store_true", help="one row per file")
     p.set_defaults(func=cmd_available)
     p = sub.add_parser("status", help="what data you have, per company")
     p.add_argument("tickers", nargs="*")
-    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
     p.add_argument("--vectors")
     p.set_defaults(func=cmd_status)
     p = sub.add_parser("companies", help="NSE listed companies: search, add")
     p.add_argument("--search", help="symbol or part of the name, e.g. wipro")
     p.add_argument("--add", nargs="+", help="NSE symbols to add to your company list")
     p.add_argument("--refresh", action="store_true", help="re-download NSE's equity list")
-    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
     p.add_argument("--delay", type=float, default=2.0)
     p.set_defaults(func=cmd_companies)
     p = sub.add_parser("trend", help="one metric over time: values, YoY, CAGR")
     p.add_argument("ticker")
     p.add_argument("metric", help="registry metric or derived: net_margin, pbt_margin, "
                                   "effective_tax_rate, employee_cost_ratio")
-    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
     p.add_argument("--scope", default="consolidated", choices=["consolidated", "standalone"])
     p.add_argument("--period", default="FY", choices=["FY", "Q"])
     p.set_defaults(func=cmd_trend)
@@ -822,7 +867,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("metrics", nargs="+")
     p.add_argument("--ticker", action="append", required=True)
     p.add_argument("--fy", action="append", default=[], help="only these years, e.g. FY24")
-    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
     p.add_argument("--scope", default="consolidated", choices=["consolidated", "standalone"])
     p.add_argument("--period", default="FY", choices=["FY", "Q"])
     p.add_argument("--normalise", default="none", choices=["none", "index100", "share"])
@@ -830,7 +875,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("ask", help="ask a question in English or Hinglish (LLM if configured, "
                                    "rules otherwise)")
     p.add_argument("question", nargs="?", default="")
-    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
     p.add_argument("--vectors")
     p.add_argument("--json", action="store_true")
     p.add_argument("--show-prompt", action="store_true", help="print the system prompt and exit")
@@ -844,17 +889,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tag", action="append", default=[], help="only these tags, e.g. compare")
     p.add_argument("--id", action="append", default=[], help="only these question ids")
     p.add_argument("--limit", type=int, help="first N questions only")
-    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
     p.add_argument("--vectors")
     p.add_argument("--out", default="work/eval")
     p.set_defaults(func=cmd_eval)
     p = sub.add_parser("llm-check", help="test the LLM connection on a few example questions")
-    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
     p.add_argument("--vectors")
     p.add_argument("-n", type=int, default=5)
     p.set_defaults(func=cmd_llm_check)
     p = sub.add_parser("serve", help="run the HTTP API (FastAPI; docs at /docs)")
-    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
     p.add_argument("--vectors")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8765)
@@ -862,14 +907,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lazy", action="store_true",
                    help="load the embedding model on the first text question, not at start")
     p.set_defaults(func=cmd_serve)
+    p = sub.add_parser("users", help="web app accounts")
+    us = p.add_subparsers(dest="users_cmd", required=True)
+    p = us.add_parser("create-admin", help="make an admin (creates the account if needed)")
+    p.add_argument("email")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
+    p.set_defaults(func=cmd_users)
     p = sub.add_parser("index", help="embed new chunks into the vector file (incremental)")
-    p.add_argument("--db", default="work/filingLens.db")
-    p.add_argument("--vectors", help="default: vectors.npy next to the database")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
+    p.add_argument("--vectors", help="default: work/vectors.npy")
     p.add_argument("--model", default="bge-m3", help="bge-m3 (default), hash, or a model id")
     p.set_defaults(func=cmd_index)
     p = sub.add_parser("search", help="hybrid search over report text")
     p.add_argument("query")
-    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
     p.add_argument("--vectors")
     p.add_argument("--ticker", action="append", default=[])
     p.add_argument("--fy", action="append", default=[])

@@ -1,4 +1,4 @@
-"""Hybrid search over chunks: dense (vectors) + keyword (SQLite FTS5 / BM25), fused with
+"""Hybrid search over chunks: dense (vectors) + keyword (Postgres full-text search), fused with
 Reciprocal Rank Fusion. Filters (company, FY, document type, scope, section) are applied
 *before* ranking, so a TCS question can never return another company's text.
 
@@ -10,13 +10,13 @@ hundreds of chunks, and those mid-ranked-in-both chunks out-scored a #1 from one
 from __future__ import annotations
 
 import re
-import sqlite3
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from filingLens.retrieval.embedder import Embedder
 from filingLens.retrieval.index import VectorIndex
+from filingLens.storage.db import Database
 
 RRF_K = 10          # smaller k favours a strong #1 in either list (60 scored 7/11, 10 -> 9/11)
 
@@ -77,15 +77,16 @@ def rrf(rankings: dict[str, list[str]], k: int = RRF_K) -> list[tuple[str, float
 
 
 def fts_query(text: str, drop: frozenset[str] = frozenset()) -> str | None:
-    """User text -> safe FTS5 query: quoted words joined by OR (punctuation in a question would
-    otherwise be FTS5 syntax). Stopwords, single letters and ``drop`` (e.g. tickers already
-    in the filter) are left out; if nothing else remains, all words are kept."""
-    words = re.findall(r"\w+", text.lower())
+    """User text -> safe Postgres ``to_tsquery`` text: plain words joined by ``|`` (OR), so
+    punctuation in a question never becomes query syntax. Stopwords, single letters and
+    ``drop`` (e.g. tickers already in the filter) are left out; if nothing else remains, all
+    words are kept."""
+    words = re.findall(r"[^\W_]+", text.lower())
     useful = [w for w in words if len(w) > 1 and w not in STOPWORDS and w not in drop]
-    return " OR ".join(f'"{w}"' for w in dict.fromkeys(useful or words)) or None
+    return " | ".join(dict.fromkeys(useful or words)) or None
 
 
-def allowed_ids(con: sqlite3.Connection, filters: SearchFilters) -> list[str]:
+def allowed_ids(con: Database, filters: SearchFilters) -> list[str]:
     where, params = filters.where()
     return [r[0] for r in con.execute(f"SELECT c.chunk_id FROM chunk c WHERE {where}", params)]
 
@@ -100,21 +101,22 @@ def dense_search(index: VectorIndex, query_vec: np.ndarray, allowed: list[str],
     return [index.chunk_ids[rows[i]] for i in top]
 
 
-def keyword_search(con: sqlite3.Connection, query: str, filters: SearchFilters,
+def keyword_search(con: Database, query: str, filters: SearchFilters,
                    k: int) -> list[str]:
     q = fts_query(query, frozenset(t.lower() for t in filters.tickers))
     if q is None:
         return []
     where, params = filters.where()
-    sql = ("SELECT f.chunk_id FROM chunk_fts f JOIN chunk c ON c.chunk_id = f.chunk_id "
-           f"WHERE chunk_fts MATCH ? AND {where} ORDER BY bm25(chunk_fts) LIMIT ?")
+    sql = ("SELECT c.chunk_id FROM chunk c, to_tsquery('english', ?) q "
+           f"WHERE c.tsv @@ q AND {where} "
+           "ORDER BY ts_rank_cd(c.tsv, q, 1) DESC, c.chunk_id LIMIT ?")
     return [r[0] for r in con.execute(sql, [q, *params, k])]
 
 
 class Searcher:
     """Hybrid search. Without an index (or embedder) it falls back to keyword-only."""
 
-    def __init__(self, con: sqlite3.Connection, index: VectorIndex | None = None,
+    def __init__(self, con: Database, index: VectorIndex | None = None,
                  embedder: Embedder | None = None, pool: int = 50):
         if index is not None and embedder is not None and index.model != embedder.name:
             raise ValueError(f"index built with {index.model}, query embedder is {embedder.name}")

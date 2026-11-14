@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import functools
 import re
-import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -34,6 +33,7 @@ from filingLens.llm.executor import Context, ToolResult, execute
 from filingLens.llm.planner import ask
 from filingLens.llm.tools import validate_call
 from filingLens.nlu import rules
+from filingLens.storage.db import Database
 
 
 @dataclass
@@ -59,7 +59,7 @@ class Response:
         return d
 
 
-def make_context(con: sqlite3.Connection, vectors: Path, registry: Registry) -> Context:
+def make_context(con: Database, vectors: Path, registry: Registry) -> Context:
     """Context whose searcher loads the vector index and embedding model once, on first use
     (keyword-only search when there is no index or the embed extra is not installed)."""
 

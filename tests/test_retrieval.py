@@ -61,14 +61,17 @@ def test_rrf_exact_order():
 
 
 def test_fts_query_is_safe_for_any_text(db):
-    assert fts_query('TCS\'s "attrition" (FY25)?') == '"tcs" OR "attrition" OR "fy25"'
+    assert fts_query('TCS\'s "attrition" (FY25)?') == "tcs | attrition | fy25"
     assert fts_query("How many people does TCS employ?", frozenset({"tcs"})) == (
-        '"people" OR "employ"')                          # stopwords + filtered ticker dropped
-    assert fts_query("kitne log kaam karte hain") == '"log" OR "kaam"'   # Hinglish
-    assert fts_query("how is it") == '"how" OR "is" OR "it"'   # only stopwords: keep all
+        "people | employ")                               # stopwords + filtered ticker dropped
+    assert fts_query("kitne log kaam karte hain") == "log | kaam"   # Hinglish
+    assert fts_query("how is it") == "how | is | it"     # only stopwords: keep all
+    assert fts_query("net_profit & margin") == "net | profit | margin"   # no query syntax
     assert fts_query("?? !!") is None
-    # FTS5 operators typed by a user are searched as plain words, never parsed as syntax
-    assert set(keyword_search(db, 'AND OR NOT "(', SearchFilters(), 5)) == {"TCS-ai", "INFY-ai"}
+    # query operators typed by a user are plain words, never syntax: no error. These three are
+    # also English stopwords, which Postgres leaves out of the index, so nothing matches.
+    assert keyword_search(db, 'AND OR NOT "( & | !', SearchFilters(), 5) == []
+    assert set(keyword_search(db, "attrition & (AND)", SearchFilters(), 5)) >= {"TCS-attr"}
 
 
 def test_index_incremental_and_row_mapping(db, tmp_path):
@@ -112,13 +115,13 @@ def test_keyword_only_fallback_and_model_mismatch(db, tmp_path):
 def test_cli_index_and_search(tmp_path, capsys):
     from filingLens.storage.db import connect
 
-    db_path = tmp_path / "w" / "f.db"
-    db_path.parent.mkdir()
-    con = connect(db_path)
+    (tmp_path / "w").mkdir()
+    con = connect()
     TextRepo(con).replace("doc-TCS", [], [chunk(f"TCS-{k}", "TCS", v) for k, v in TEXTS.items()])
     con.close()
-    assert main(["index", "--db", str(db_path), "--model", "hash"]) == 0
+    vec = str(tmp_path / "w" / "vectors.npy")
+    assert main(["index", "--vectors", vec, "--model", "hash"]) == 0
     assert (tmp_path / "w" / "vectors.npy").exists()
-    assert main(["search", "final dividend", "--db", str(db_path), "--ticker", "tcs"]) == 0
+    assert main(["search", "final dividend", "--vectors", vec, "--ticker", "tcs"]) == 0
     out = capsys.readouterr().out
     assert "[1] TCS | Annual Report FY25" in out and "dividend" in out
