@@ -133,7 +133,7 @@
 - id: d05
   q: HUL ka margin kitna hai?
   tags: [derived, value, hinglish]
-  expect: {tool: [get_value, get_trend], args: {ticker: HINDUNILVR, metric: net_margin}, values: [16.61]}
+  expect: {tool: [get_value, get_trend], args: {ticker: HINDUNILVR, metric: net_margin}, values: [23.36]}   # latest (FY26)
 - id: d06
   q: TCS tax rate history
   tags: [derived, trend, en]
@@ -260,9 +260,9 @@
   tags: [missing, en]
   expect: {tool: get_value, args: {ticker: TCS, fy: FY19}, no_value: true}
 - id: m02
-  q: HUL revenue in FY26
+  q: HUL revenue in FY20
   tags: [missing, en]
-  expect: {tool: get_value, args: {ticker: HINDUNILVR, fy: FY26}, no_value: true}
+  expect: {tool: get_value, args: {ticker: HINDUNILVR, fy: FY20}, no_value: true}
 - id: m03
   q: Wipro net profit FY25
   tags: [missing, en]

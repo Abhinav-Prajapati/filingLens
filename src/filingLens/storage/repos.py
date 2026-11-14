@@ -120,7 +120,8 @@ class FactRepo:
             sql += " AND CAST(substr(fy,3) AS INTEGER) <= ?"
             params.append(fy_int(fy_to))
         rows = self.con.execute(sql + " ORDER BY period_end", params).fetchall()
-        return [Fact(**{k: r[k] for k in r.keys() if k in Fact.model_fields}) for r in rows]
+        return [Fact(**{k: r[k] for k in r.keys() if k in Fact.model_fields})  # noqa: SIM118 - sqlite3.Row iterates values
+                for r in rows]
 
     def list_facts(self, tickers: Iterable[str] | None = None) -> list[Fact]:
         sql, params = "SELECT * FROM fact", []
@@ -129,7 +130,8 @@ class FactRepo:
             sql += f" WHERE ticker IN ({','.join('?' * len(tk))})"
             params = tk
         rows = self.con.execute(sql + " ORDER BY ticker, metric_id, period_end", params).fetchall()
-        return [Fact(**{k: r[k] for k in r.keys() if k in Fact.model_fields}) for r in rows]
+        return [Fact(**{k: r[k] for k in r.keys() if k in Fact.model_fields})  # noqa: SIM118 - sqlite3.Row iterates values
+                for r in rows]
 
     def delete_facts(self, tickers: Iterable[str], method: str = "xbrl") -> int:
         tk = list(tickers)

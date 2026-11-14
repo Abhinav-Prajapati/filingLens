@@ -35,7 +35,8 @@ def fmt_indian(x: float, dec: int = 0) -> str:
     s = f"{d:f}"
     ip, _, fp = s.partition(".")
     if len(ip) > 3:
-        head, tail, groups = ip[:-3], ip[-3:], []
+        head, tail = ip[:-3], ip[-3:]
+        groups: list[str] = []
         while len(head) > 2:
             groups.insert(0, head[-2:])
             head = head[:-2]

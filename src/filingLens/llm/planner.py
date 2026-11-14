@@ -20,6 +20,7 @@ from filingLens.llm.client import LLMClient, LLMReply
 from filingLens.llm.executor import Context, ToolResult, execute
 from filingLens.llm.prompt import build_system_prompt
 from filingLens.llm.tools import tool_schemas, validate_call
+from filingLens.nlu.rules import _norm, month_quarter
 
 ALL_COMPANIES = re.compile(r"\b(all|three|3|teeno|tino|teenon|sab|sabhi|saari|every|each|"
                            r"companies|kampaniyon|kampaniyan)\b", re.IGNORECASE)
@@ -77,6 +78,17 @@ def ungrounded_tickers(question: str, tickers: list[str], ctx: Context) -> list[
     return [t for t in tickers if t not in named]
 
 
+def fix_month_quarter(question: str, tool: str, args: Any) -> tuple[Any, str | None]:
+    """Models get "September 2026 quarter" wrong (Q3, Q1, FY26...). The quarter a month ends is
+    fixed by the calendar, so code decides it and the model's guess is overridden."""
+    mq = month_quarter(_norm(question))
+    if tool != "get_value" or mq is None or (args.fy, args.quarter) == mq:
+        return args, None
+    note = (f"'{question}' means {mq[0]} {mq[1]} (Indian fiscal year April-March); "
+            f"the model asked for {args.fy} {args.quarter or ''}".rstrip())
+    return args.model_copy(update={"fy": mq[0], "quarter": mq[1]}), note
+
+
 def _tickers(args: dict) -> list[str]:
     return list(args.get("tickers") or ([args["ticker"]] if args.get("ticker") else []))
 
@@ -115,6 +127,7 @@ def ask(question: str, llm: LLMClient, ctx: Context, max_attempts: int = 2,
                            "in the question; if they named a company not in the list, call "
                            "ask_user")
                 else:
+                    args, fixed = fix_month_quarter(question, call.name, args)
                     out.tool, out.args = call.name, args.model_dump()
                     try:
                         out.result = execute(call.name, args, ctx)
@@ -122,6 +135,8 @@ def ask(question: str, llm: LLMClient, ctx: Context, max_attempts: int = 2,
                         out.errors.append(f"tool {call.name} failed: {type(e).__name__}: {e}")
                         out.result = ToolResult(call.name, "the data lookup failed",
                                                 notes=[f"{type(e).__name__}: {e}"])
+                    if fixed:
+                        out.result.notes.insert(0, fixed)
                     break
         out.errors.append(err)
         messages += [_assistant_turn(reply), _correction(reply, err)]

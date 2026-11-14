@@ -23,7 +23,8 @@ def client(tmp_path):
         + [make_fact(metric="net_profit", fy=fy, value=v) for fy, v in NP.items()]
         + [make_fact(ticker="INFY", fy="FY24", value=153670.0)])
     con.close()
-    with TestClient(create_app(db, llm=None, registry=load_registry())) as c:
+    with TestClient(create_app(db, llm=None, registry=load_registry(),
+                               equity_list=tmp_path / "none.csv")) as c:
         yield c
 
 
@@ -77,3 +78,14 @@ def test_catalog_endpoints_and_schema(client):
     assert h["facts"] == 5 and h["companies_with_data"] == 2 and h["llm"] is None
     schemas = client.get("/openapi.json").json()["components"]["schemas"]
     assert {"AnswerView", "DataView", "Table", "Chart", "Series", "Stat", "Source"} <= set(schemas)
+
+
+def test_source_summary_groups_pages_by_report():
+    from filingLens.views import source_summary
+
+    cites = [{"ticker": "TCS", "page": 91, "report": "TCS Annual Report FY25"},
+             {"ticker": "TCS", "page": 12, "report": "TCS Annual Report FY25"},
+             {"ticker": "TCS", "page": None, "filing": "TCS FY26 results (XBRL)"},
+             {"ticker": "INFY", "page": 24, "report": None}]
+    assert source_summary(cites) == ("TCS Annual Report FY25 p.12, p.91; INFY annual report "
+                                     "p.24; TCS FY26 results (XBRL)")

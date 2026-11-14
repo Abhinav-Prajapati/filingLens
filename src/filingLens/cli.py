@@ -582,7 +582,9 @@ def _print_tool_result(res, evidence: bool = True) -> None:  # type: ignore[no-u
             for row in res.rows:
                 snippet = re.sub(r"\s+", " ", row["text"])[:300]
                 print(f"[{row['rank']}] {row['source']}\n    {snippet}\n")
-        labels = list(dict.fromkeys(_source_label(r["source"]) for r in res.rows))
+        labels = list(dict.fromkeys(f"{c.get('report') or c.get('ticker')} "
+                                    f"{_source_label(r['source'])}"
+                                    for r, c in zip(res.rows, res.citations, strict=True)))
         if labels:
             print("sources: " + "; ".join(labels))
     else:
@@ -590,10 +592,10 @@ def _print_tool_result(res, evidence: bool = True) -> None:  # type: ignore[no-u
         if res.rows:
             print(_table([{c: _cell(c, r.get(c), res.unit) for c in res.columns}
                           for r in res.rows], res.columns))
-        pages = sorted({(c.get("ticker"), c.get("page")) for c in res.citations
-                        if c.get("page")}, key=str)
-        if pages:
-            print("sources: " + ", ".join(f"{t} annual report p.{p}" for t, p in pages))
+        from filingLens.views import source_summary
+
+        if res.citations:
+            print("sources: " + source_summary(res.citations))
     for n in res.notes:
         print(f"note: {n}")
 
@@ -601,7 +603,7 @@ def _print_tool_result(res, evidence: bool = True) -> None:  # type: ignore[no-u
 def cmd_ask(args: argparse.Namespace) -> int:
     from filingLens.llm.client import LLMConfig, make_client
     from filingLens.llm.prompt import build_system_prompt
-    from filingLens.service import AnswerService
+    from filingLens.service import AnswerService, make_guard
 
     cfg = LLMConfig.from_env()
     with _db(args.db) as con:
@@ -611,8 +613,8 @@ def cmd_ask(args: argparse.Namespace) -> int:
             return 0
         llm = None if args.no_llm or cfg.missing() else make_client(cfg)
         reason = "--no-llm" if args.no_llm else f"not configured: set {', '.join(cfg.missing())}"
-        r = AnswerService(ctx, llm, write_answer=not args.no_answer,
-                          no_llm_reason=reason).answer(args.question)
+        r = AnswerService(ctx, llm, write_answer=not args.no_answer, no_llm_reason=reason,
+                          guard=make_guard(ctx.registry)).answer(args.question)
     if args.json:                          # the same typed view the API returns from /ask
         from filingLens.views import answer_view
 
@@ -681,7 +683,7 @@ def cmd_llm_check(args: argparse.Namespace) -> int:
 def cmd_eval(args: argparse.Namespace) -> int:
     from filingLens.evaluation import load_cases, previous_summary, run, save, summarise
     from filingLens.llm.client import LLMConfig, make_client
-    from filingLens.service import AnswerService
+    from filingLens.service import AnswerService, make_guard
 
     cases = load_cases(Path(args.file))
     if args.tag:
@@ -699,7 +701,8 @@ def cmd_eval(args: argparse.Namespace) -> int:
         with _db(args.db) as con:
             ctx = _llm_context(con, _vectors_path(args))
             llm = make_client(cfg) if mode == "llm" else None
-            svc = AnswerService(ctx, llm, no_llm_reason="rules mode")
+            svc = AnswerService(ctx, llm, no_llm_reason="rules mode",
+                                guard=make_guard(ctx.registry))
             label = f"{cfg.model} @ {cfg.base_url}" if llm else "rule-based planner"
             print(f"\n=== {mode}: {len(cases)} questions  ({label})")
 

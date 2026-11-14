@@ -10,6 +10,26 @@ Facts come from a verified database (XBRL), never from an LLM. See the V1 build 
 - [x] Phase 5: `retrieval` (BGE-M3 embeddings in vectors.npy, FTS5 keyword, RRF hybrid search)
 - [x] Phase 6: `analytics` (YoY, CAGR, margins, trends, unit-safe comparisons)
 - [x] LLM planner (`llm/`): question -> one validated tool call (OpenAI-compatible API)
+- [x] Rule planner + answer service (`nlu/`, `service.py`): works without an LLM
+- [x] Eval set + harness (`evals/`, `evaluation.py`)
+- [x] HTTP API with typed, chart-ready views (`api/`, `views.py`)
+
+## Quickstart
+    uv sync --extra dev --extra llm --extra api --extra embed   # embed: BGE-M3 (~2 GB, GPU optional)
+    source .venv/bin/activate
+    filinglens companies                    # download NSE's list of listed companies (once)
+    filinglens download TCS INFY HINDUNILVR # results XBRL + annual reports -> work/inbox
+    filinglens ingest work/inbox            # facts, checks, report pages, PDF verification
+    filinglens index                        # embeddings for report search
+    filinglens status                       # what you have, per company
+    filinglens ask "TCS vs Infosys net margin" --no-llm
+    cp .env.example .env                    # optional: an LLM for harder questions
+    filinglens serve                        # HTTP API: http://127.0.0.1:8765/docs
+    filinglens eval --mode rules            # score answers on evals/questions.yaml
+
+Other companies: `filinglens companies --search "hcl tech"`, then `--add HCLTECH`, then
+download and ingest. A question about a listed company that is not loaded is answered with
+"not loaded" (and how to add it), never with another company's numbers.
 
 ## Asking questions
 `filinglens ask` works with or without an LLM. Every path runs the same tools on the same data:

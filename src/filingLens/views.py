@@ -81,7 +81,8 @@ class Source(BaseModel):
     period: str | None = None
     xbrl_tag: str | None = None
     doc_id: str | None = None
-    page: int | None = None                    # annual-report page (PDF page number)
+    document: str | None = None                # "TCS Annual Report FY25", "TCS FY24 results (XBRL)"
+    page: int | None = None                    # page in that report (PDF page number)
     section: str | None = None
     verified: str | None = None                # "pdf": value found on that page
 
@@ -222,22 +223,40 @@ def _stats(res: ToolResult, args: dict[str, Any]) -> list[Stat]:
     return out
 
 
+def source_summary(citations: list[dict[str, Any]]) -> str:
+    """'TCS Annual Report FY25 p.91, p.92; INFY FY24 results (XBRL)': pages grouped by report;
+    values without a report page are cited by their XBRL filing."""
+    pages: dict[str, set[int]] = {}
+    filings: list[str] = []
+    for c in citations:
+        if c.get("page"):
+            pages.setdefault(c.get("report") or f"{c.get('ticker')} annual report",
+                             set()).add(c["page"])
+        elif c.get("filing"):
+            filings.append(c["filing"])
+    parts = [f"{rep} " + ", ".join(f"p.{p}" for p in sorted(ps)) for rep, ps in pages.items()]
+    return "; ".join(parts + list(dict.fromkeys(filings)))
+
+
 def _sources(res: ToolResult) -> list[Source]:
     out = []
     for c in res.citations:
         page = c.get("page")
+        report = c.get("report") or f"{c.get('ticker')} annual report"
         if res.tool == "search_reports":
             out.append(Source(kind="report", ticker=c.get("ticker"), page=page,
                               section=c.get("section"), doc_id=c.get("doc_id"),
-                              label=f"{c.get('ticker')} annual report p.{page}"
+                              document=c.get("report"),
+                              label=f"{report} p.{page}"
                                     + (f" ({c['section']})" if c.get("section") else "")))
             continue
         label = f"{c.get('ticker')} {c.get('period')} {c.get('metric')}"
-        label += f" · annual report p.{page}" if page else f" · XBRL {c.get('xbrl_tag')}"
+        label += f" · {report} p.{page}" if page else f" · {c.get('filing') or 'XBRL filing'}"
         out.append(Source(kind="derived" if c.get("method") == "derived" else "xbrl",
                           label=label, ticker=c.get("ticker"), metric=c.get("metric"),
                           period=c.get("period"), xbrl_tag=c.get("xbrl_tag"),
-                          doc_id=c.get("doc_id"), page=page, verified=c.get("verified")))
+                          doc_id=c.get("doc_id"), page=page, verified=c.get("verified"),
+                          document=c.get("report") if page else c.get("filing")))
     return out
 
 

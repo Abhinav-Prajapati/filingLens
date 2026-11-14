@@ -28,7 +28,7 @@ from pathlib import Path
 from filingLens.domain.models import Chunk, Page
 
 PARSER_NAME = "pymupdf"
-PARSER_VERSION = "2"   # bump to re-parse stored PDFs
+PARSER_VERSION = "3"   # bump to re-parse stored PDFs
 DOC_LABEL = {"annual_report": "Annual Report", "brsr": "BRSR", "transcript": "Earnings call",
              "presentation": "Investor presentation"}
 
@@ -37,7 +37,7 @@ DOC_LABEL = {"annual_report": "Annual Report", "brsr": "BRSR", "transcript": "Ea
 _SECTIONS = [
     ("notice", r"\bnotice\b"),
     ("directors_report", r"board.?s report|directors.? report"),
-    ("mdna", r"management discussion"),
+    ("mdna", r"management.?s? discussion"),           # "Management’s discussion" (Infosys)
     ("corporate_governance", r"corporate governance"),
     ("brsr", r"business responsibility"),
     ("auditor_report", r"independent auditor"),

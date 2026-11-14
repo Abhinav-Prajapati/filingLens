@@ -1,0 +1,19 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      # no embed extra (torch is large) and no LLM: tests use a fake LLM and hash embeddings
+      - run: uv sync --extra dev --extra api --extra llm
+      - run: uv run ruff check src tests
+      - run: uv run mypy src
+      - run: uv run pytest -q

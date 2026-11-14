@@ -67,3 +67,9 @@ def test_infer_fy_and_pack_blocks():
     chunks = pack_blocks([long, "x" * 10])
     assert all(len(c) <= 1100 for c in chunks) and len(chunks) == 3
     assert pack_blocks(["tiny"]) == []                          # page furniture dropped
+
+
+def test_mdna_heading_with_apostrophe():
+    for head in ("Management’s Discussion and Analysis", "Management Discussion and Analysis"):
+        (p,) = classify([Panel(1, "", [f"{head}\nthe company grew in all markets"])])
+        assert p.section == "mdna", head

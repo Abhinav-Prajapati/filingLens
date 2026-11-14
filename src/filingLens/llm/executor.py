@@ -42,6 +42,22 @@ class Context:
     con: sqlite3.Connection
     registry: Registry
     searcher: Callable[[], Any] | None = None    # lazy: loads the embedding model on demand
+    _labels: dict[str, str] = field(default_factory=dict, repr=False)
+
+    def doc_label(self, doc_id: str | None) -> str | None:
+        """'TCS Annual Report FY25' / 'TCS FY24 results (XBRL)' for a stored document."""
+        if not doc_id:
+            return None
+        if doc_id not in self._labels:
+            row = self.con.execute("SELECT ticker, doc_type, fy FROM document WHERE doc_id=?",
+                                   (doc_id,)).fetchone()
+            if row is None:
+                return None
+            t, kind, fy = row
+            self._labels[doc_id] = (f"{t} Annual Report {fy or ''}".strip()
+                                    if kind == "annual_report" else f"{t} {fy or ''} results "
+                                    "(XBRL)".replace("  ", " "))
+        return self._labels[doc_id]
 
     def get(self, t: str, m: str, s: str, p: str) -> list[Fact]:
         return FactRepo(self.con).get_series(t, m, scope=s, period_type=p)
@@ -54,9 +70,12 @@ class Context:
         return max(fys, key=fy_int) if fys else None
 
 
-def _cite(f: Fact) -> dict[str, Any]:
+def _cite(f: Fact, ctx: Context) -> dict[str, Any]:
+    """Where a value came from: the XBRL filing, and the annual-report page that shows it."""
     return {"ticker": f.ticker, "metric": f.metric_id, "period": f.fy + (f" {f.quarter}" if
             f.quarter else ""), "xbrl_tag": f.xbrl_tag, "doc_id": f.doc_id[:12],
+            "filing": ctx.doc_label(f.doc_id),
+            "report": ctx.doc_label(f.pdf_doc_id) if f.page else None,
             "page": f.page, "verified": f.verified, "method": f.method}
 
 
@@ -94,7 +113,7 @@ def get_value(a: GetValue, ctx: Context) -> ToolResult:
     f = hits[0]
     r.unit = f.unit
     r.rows = [{"ticker": f.ticker, "metric": f.metric_id, "period": label, "value": f.value}]
-    r.citations = [_cite(f)]
+    r.citations = [_cite(f, ctx)]
     return r
 
 
@@ -111,7 +130,7 @@ def get_trend(a: GetTrend, ctx: Context) -> ToolResult:
     change = "change_pp" if t.is_ratio else "yoy"
     r.columns = ["period", "value", change]
     r.rows = [{"period": row.label, "value": row.value, change: row.change} for row in t.rows]
-    r.citations = [_cite(row.fact) for row in t.rows if row.fact]
+    r.citations = [_cite(row.fact, ctx) for row in t.rows if row.fact]
     if t.cagr is not None and t.cagr_span:
         r.notes.append(f"CAGR {t.cagr_span[0]}-{t.cagr_span[1]}: {t.cagr * 100:+.2f}%")
     if a.period == "FY":
@@ -188,7 +207,7 @@ def compare(a: Compare, ctx: Context) -> ToolResult:
     rows = [{"period": str(p), **{k: (None if isinstance(v, float) and math.isnan(v) else v)
                                   for k, v in zip(cols, rec, strict=True)}}
             for p, rec in zip(c.frame.index, c.frame.itertuples(index=False), strict=True)]
-    cites = [_cite(f) for facts in series.values() for f in facts
+    cites = [_cite(f, ctx) for facts in series.values() for f in facts
              if not periods or f.fy in periods]
     changes = _changes(series, [str(r["period"]) for r in rows])
     change = _change_note(changes)
@@ -206,7 +225,8 @@ def search_reports(a: SearchReports, ctx: Context) -> ToolResult:
     r = ToolResult("search_reports", f"search: {a.query}", columns=["rank", "source", "text"])
     r.rows = [{"rank": i, "source": h.context_line, "text": h.text} for i, h in enumerate(hits, 1)]
     r.citations = [{"ticker": h.ticker, "doc_id": h.doc_id[:12], "page": h.page,
-                    "section": h.section, "chunk_id": h.chunk_id} for h in hits]
+                    "report": ctx.doc_label(h.doc_id), "section": h.section,
+                    "chunk_id": h.chunk_id} for h in hits]
     if not hits:
         r.notes.append("no matching text in the loaded reports")
     return r

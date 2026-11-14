@@ -48,7 +48,7 @@ def ptype(start: dt.date, end: dt.date) -> str:
 
 
 def infer_fy_from_name(name: str) -> str | None:
-    m = re.search(r"FY[\s_-]?(\d{4}|\d{2})(?!\d)", name, re.I)
+    m = re.search(r"FY[\s_-]?(\d{4}|\d{2})(?!\d)", name, re.IGNORECASE)
     if m:
         return f"FY{int(m.group(1)[-2:]):02d}"
     m = re.search(r"(20\d{2})[-_](\d{2})(?!\d)", name)

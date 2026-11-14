@@ -1,23 +1,32 @@
-"""The answer service: one function from question to complete response, used by the CLI and
-(later) the API, so both behave identically.
+"""The answer service: one function from question to complete response, used by the CLI, the
+API and the eval, so all behave identically.
 
+    question names a listed company that is not loaded -> say so (no partial answer)
     LLM configured and working  -> LLM picks the tool -> run -> LLM writes a checked answer
     no LLM / LLM fails / no valid call -> rule-based plan -> run (table, no written answer)
     rules find no metric        -> search the reports -> passages with page sources
 
-The tools and data are the same on every path; only the understanding step differs. A
-deliberate clarification from the model (e.g. "I only have TCS, Infosys...") is returned as
-is, not overridden by the rules.
+The tools and data are the same on every path; only the understanding step differs. When the
+model asks back or searches the reports although the rules find covered companies and a known
+metric, the checked data is used instead (models refuse covered companies or read a figure
+off a PDF page). A written answer that names a company not in the data is rejected.
 """
 from __future__ import annotations
 
 import functools
+import re
 import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from filingLens.companies import (
+    DEFAULT_LIST_PATH,
+    CompanyGuard,
+    ListedCompany,
+    load_equity_list,
+)
 from filingLens.domain.registry import Registry
 from filingLens.llm.answer import Answer, compose_answer
 from filingLens.llm.client import LLMClient
@@ -72,19 +81,51 @@ def make_context(con: sqlite3.Connection, vectors: Path, registry: Registry) -> 
     return Context(con, registry, searcher)
 
 
+def make_guard(registry: Registry, path: Path = DEFAULT_LIST_PATH) -> CompanyGuard | None:
+    """Guard over NSE's equity list (``filinglens companies`` downloads it); None without it."""
+    listed = load_equity_list(path)
+    return CompanyGuard(listed, registry, rules.question_words(registry)) if listed else None
+
+
+DATA_TOOLS = ("get_value", "get_trend", "compare")
+# text questions the rules may still find a metric in ("why did revenue fall")
+EXPLAIN = re.compile(r"\b(why|reason|reasons|explain|kyun|kyon|driver|drivers|drove|"
+                           r"strategy|outlook|guidance|risk|risks|commentary|plan|plans)\b")
+
+
+def not_loaded_message(missing: list[ListedCompany], reg: Registry) -> str:
+    names = ", ".join(f"{c.name} ({c.symbol})" for c in missing)
+    have = ", ".join(c.name for c in reg.companies.values())
+    syms = " ".join(c.symbol for c in missing)
+    return (f"{names} {'is' if len(missing) == 1 else 'are'} not loaded, so I can't answer "
+            f"about {'it' if len(missing) == 1 else 'them'}. Loaded: {have}. To add: "
+            f"filinglens companies --add {syms} && filinglens download {syms} && "
+            "filinglens ingest work/inbox")
+
+
 class AnswerService:
     def __init__(self, ctx: Context, llm: LLMClient | None = None, write_answer: bool = True,
-                 no_llm_reason: str = "none configured"):
+                 no_llm_reason: str = "none configured", guard: CompanyGuard | None = None):
         self.ctx, self.llm, self.write_answer = ctx, llm, write_answer
-        self.no_llm_reason = no_llm_reason
+        self.no_llm_reason, self.guard = no_llm_reason, guard
 
     def answer(self, question: str) -> Response:
         t0 = time.monotonic()
-        r = self._via_llm(question) if self.llm is not None else None
-        if r is None:
+        missing = self.guard.find(question) if self.guard else []
+        if missing:
+            r = Response(question, "rules", "ask_user", {}, notes=[
+                "the question names a company that is not loaded"])
+            r.result = ToolResult("ask_user", "company not loaded",
+                                  clarify=not_loaded_message(missing, self.ctx.registry))
+            r.seconds = round(time.monotonic() - t0, 2)
+            return r
+        via_llm = self._via_llm(question) if self.llm is not None else None
+        if via_llm is None:
             r = self._via_rules(question)
             if self.llm is None:
                 r.notes.insert(0, f"answered without the LLM ({self.no_llm_reason})")
+        else:
+            r = via_llm
         r.seconds = round(time.monotonic() - t0, 2)
         return r
 
@@ -94,13 +135,43 @@ class AnswerService:
         res = ask(question, self.llm, self.ctx)
         out = Response(question, "llm", res.tool, res.args, res.result, attempts=res.attempts,
                        errors=list(res.errors))
+        if res.ok and res.tool in ("ask_user", "search_reports"):
+            override = self._data_instead(question, res.tool)
+            if override is not None:
+                out = override
+                out.errors, out.attempts = list(res.errors), res.attempts
         if res.ok:
-            if self.write_answer and res.result is not None:
-                out.answer = compose_answer(question, res.result, self.llm)
+            if self.write_answer and out.result is not None:
+                out.answer = self._checked_answer(question, out.result)
             return out
         if any("did not name" in e for e in res.errors):
             return out                   # company not covered: keep the model's clarification
         return self._fallback(question, out.errors, out.attempts)
+
+    def _data_instead(self, question: str, model_tool: str) -> Response | None:
+        """The model asked back or searched the reports, but the question names covered
+        companies and a known metric: answer from the checked data instead."""
+        p = rules.plan(question, self.ctx.registry)
+        if p is None or p.tool not in DATA_TOOLS:
+            return None
+        if model_tool == "search_reports" and EXPLAIN.search(rules._norm(question)):
+            return None                              # "why did revenue fall": a text question
+        r = self._via_rules(question)
+        if r.mode != "rules" or r.result is None or r.result.empty:
+            return None
+        what = "asked back" if model_tool == "ask_user" else "searched the report text"
+        r.notes.insert(0, f"the model {what}; the question names covered companies and a known "
+                          "metric, so the checked data was used")
+        return r
+
+    def _checked_answer(self, question: str, result: ToolResult) -> Answer:
+        assert self.llm is not None
+        a = compose_answer(question, result, self.llm)
+        named = self.guard.find(a.text) if self.guard and a.text else []
+        if named:
+            a = Answer(None, True, "the answer named " + ", ".join(c.name for c in named)
+                       + ", which is not in the data")
+        return a
 
     def _fallback(self, question: str, errors: list[str], attempts: int) -> Response:
         r = self._via_rules(question)

@@ -1,8 +1,7 @@
 import pytest
+from conftest import make_fact
 
 from filingLens.storage.db import SCHEMA_VERSION, connect
-from filingLens.storage.repos import FactRepo
-from conftest import make_fact
 
 
 def test_schema_created_and_versioned(con):

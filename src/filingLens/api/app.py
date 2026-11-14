@@ -22,13 +22,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from filingLens.analytics.derived import DERIVED
-from filingLens.companies import registry_with_overlay
+from filingLens.companies import DEFAULT_LIST_PATH, registry_with_overlay
 from filingLens.domain.fiscal import fy_int
 from filingLens.domain.registry import Registry
 from filingLens.llm.client import LLMClient, LLMConfig, make_client
 from filingLens.llm.executor import execute
 from filingLens.llm.tools import validate_call
-from filingLens.service import AnswerService, make_context
+from filingLens.service import AnswerService, make_context, make_guard
 from filingLens.storage.db import connect
 from filingLens.views import AnswerView, DataView, answer_view, data_view, metric_label
 
@@ -76,7 +76,8 @@ def _llm_from_env() -> LLMClient | None:
 
 def create_app(db: str | Path = "work/filingLens.db", vectors: str | Path | None = None,
                llm: LLMClient | None | Literal["env"] = "env", warm: bool = False,
-               registry: Registry | None = None) -> FastAPI:
+               registry: Registry | None = None,
+               equity_list: str | Path = DEFAULT_LIST_PATH) -> FastAPI:
     """``llm="env"`` reads the LLM settings from the environment / .env; ``warm`` loads the
     embedding model at startup instead of on the first text question."""
     db = Path(db)
@@ -85,6 +86,7 @@ def create_app(db: str | Path = "work/filingLens.db", vectors: str | Path | None
     con = connect(db, threads=True)
     ctx = make_context(con, vectors, reg)
     client = _llm_from_env() if llm == "env" else llm
+    guard = make_guard(reg, Path(equity_list))     # "HCL Tech is not loaded"
     llm_label = None
     if client is not None:
         cfg = getattr(client, "cfg", None)
@@ -118,7 +120,8 @@ def create_app(db: str | Path = "work/filingLens.db", vectors: str | Path | None
     @app.post("/ask", response_model=AnswerView)
     def ask(req: AskRequest) -> AnswerView:
         reason = "use_llm=false" if not req.use_llm else "not configured"
-        svc = AnswerService(ctx, client if req.use_llm else None, req.write_answer, reason)
+        svc = AnswerService(ctx, client if req.use_llm else None, req.write_answer, reason,
+                            guard)
         with lock:
             r = svc.answer(req.question)
         return answer_view(r, reg)

@@ -57,3 +57,14 @@ addopts = '-m "not embed and not llm"'
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+# N999: the package is named filingLens on purpose; SIM905: word lists read best as "a b c".split()
+extend-ignore = ["N999", "SIM905"]
+
+[tool.mypy]
+python_version = "3.11"
+
+[[tool.mypy.overrides]]
+module = ["lxml.*", "pandas.*", "yaml.*", "sentence_transformers.*", "uvicorn.*"]
+ignore_missing_imports = true

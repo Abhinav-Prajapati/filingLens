@@ -32,10 +32,35 @@ DERIVED_PHRASES = {
     "effective tax rate": "effective_tax_rate", "tax rate": "effective_tax_rate",
     "employee cost ratio": "employee_cost_ratio", "staff cost ratio": "employee_cost_ratio",
 }
+# everyday phrases for stored metrics (registry synonyms are the formal names)
+EXTRA_PHRASES = {
+    "bottom line": "net_profit", "top line": "revenue_from_operations",
+    "make from operations": "revenue_from_operations",
+    "made from operations": "revenue_from_operations",
+    "earn from operations": "revenue_from_operations",
+    "staff cost": "employee_expense", "staff costs": "employee_expense",
+    "staff expenses": "employee_expense", "salary bill": "employee_expense",
+    "profitable": "net_margin", "profitability": "net_margin",
+    "employee cost as a share of revenue": "employee_cost_ratio",
+    "employee cost as a percentage of revenue": "employee_cost_ratio",
+    "employee costs as a share of revenue": "employee_cost_ratio",
+}
+QUARTERLY = r"\b(quarterly|quarter-wise|quarter wise|every quarter|har quarter|by quarter)\b"
 COMPARE_WORDS = r"\b(vs|versus|compare|comparison|compared|tulna|against|between)\b"
 GROWTH_WORDS = r"\b(growth|grew|grow|growing|faster|badha|badhi|badhe|increase[sd]?)\b"
-TREND_WORDS = r"\b(trend|trends|history|historical|over the years|over time|years|saal|sal|since)\b"
+TREND_WORDS = (r"\b(trend|trends|history|historical|over the years|over time|years|saal|sal|"
+               r"since|changed|evolved)\b")
 ALL_WORDS = r"\b(all|teeno|tino|teenon|sab|sabhi|saari)\b"
+MONTHS = {m: i for i, ms in enumerate(
+    ["jan january", "feb february", "mar march", "apr april", "may", "jun june", "jul july",
+     "aug august", "sep sept september", "oct october", "nov november", "dec december"], 1)
+    for m in ms.split()}
+_MONTH = "|".join(sorted(MONTHS, key=len, reverse=True))
+# "September 2026 quarter", "quarter ended 30 September 2026", "Dec'25 quarter", "Sep-26 qtr"
+_MONTH_QUARTER = re.compile(
+    rf"\b(?:(?:quarter|qtr|q)\s+(?:ended|ending)\s+(?:\d{{1,2}}(?:st|nd|rd|th)?\s+)?"
+    rf"(?P<m1>{_MONTH})\.?\s*(?:\d{{1,2}}(?:st|nd|rd|th)?\s*)?'?\s*-?(?P<y1>20\d{{2}}|\d{{2}})\b"
+    rf"|(?P<m2>{_MONTH})\.?\s*'?\s*-?(?P<y2>20\d{{2}}|\d{{2}})\s+(?:quarter|qtr)\b)")
 
 
 @dataclass
@@ -78,7 +103,7 @@ def find_companies(text: str, reg: Registry) -> list[str]:
 
 
 def find_metrics(text: str, reg: Registry) -> list[str]:
-    phrases = dict(DERIVED_PHRASES)
+    phrases = dict(DERIVED_PHRASES) | EXTRA_PHRASES
     for name in DERIVED:
         phrases.setdefault(name.replace("_", " "), name)
     for mid, m in reg.metrics.items():
@@ -86,6 +111,21 @@ def find_metrics(text: str, reg: Registry) -> list[str]:
         for s in m.synonyms:
             phrases.setdefault(s.lower(), mid)
     return _find_phrases(text, phrases)
+
+
+def month_quarter(text: str) -> tuple[str, str] | None:
+    """Quarter named by its last month -> (FY, quarter) of the Indian fiscal year (April-March):
+    "September 2026 quarter" -> ("FY27", "Q2"); "quarter ended March 2025" -> ("FY25", "Q4").
+    The month must end a quarter (Jun, Sep, Dec, Mar); ``text`` is lowercase."""
+    m = _MONTH_QUARTER.search(text.lower().replace("’", "'"))
+    if not m:
+        return None
+    month = MONTHS[(m.group("m1") or m.group("m2"))]
+    year = int((m.group("y1") or m.group("y2"))[-2:])
+    if month % 3:
+        return None
+    fy = year if month <= 3 else year + 1
+    return f"FY{fy % 100:02d}", f"Q{(month - 4) % 12 // 3 + 1}"
 
 
 def find_years(text: str) -> dict:
@@ -108,6 +148,8 @@ def find_years(text: str) -> dict:
     q = re.search(r"\bq([1-4])\b", text)
     if q:
         out["quarter"] = f"Q{q.group(1)}"
+    if mq := month_quarter(text):                    # the calendar year is not an FY
+        out["fys"], out["quarter"] = [mq[0]], mq[1]
     return out
 
 
@@ -144,6 +186,8 @@ def plan(question: str, reg: Registry) -> RulePlan | None:
         return RulePlan("compare", args, found, notes)
 
     base = {"ticker": companies[0], "metric": metrics[0], "scope": scope}
+    if re.search(QUARTERLY, text) and not fys:
+        return RulePlan("get_trend", {**base, "period": "Q"}, found)
     if years.get("quarter") and len(fys) <= 1:
         return RulePlan("get_value", {**base, "fy": fys[0] if fys else "latest",
                                       "quarter": years["quarter"]}, found)
@@ -160,3 +204,31 @@ def plan(question: str, reg: Registry) -> RulePlan | None:
         return RulePlan("get_trend", base, found)
     return RulePlan("get_value", {**base, "fy": "latest"}, found,
                     ["no year given: showing the latest"])
+
+
+# words that are never a company name on their own (for companies.CompanyGuard)
+QUESTION_WORDS = frozenset("""
+show tell give list find get compare comparison vs versus between against which who whose what
+how why when much many more most less least higher lower highest lowest best worst better worse
+than over under last past previous next latest current recent year years quarter quarterly
+annual yearly trend trends growth grew grow growing faster slower increase decrease rise fall
+change changes share ratio margin rate total net gross value data report reports annual
+consolidated standalone please about same each every all both three teeno tino sab sabhi saari
+kya hai tha thi the kitna kitni kitne kiska kiski kiske kaun kaunsi kaisa kaise kyun mein me ka
+ki ke ko se aur ya pichle pichhle saal sal badha badhi badhe zyada kam sabse tulna batao dikhao
+india indian inr crore crores lakh rupees rs percent first second third fourth one two
+company companies firm group business money make made earn earned earnings income sales
+profit profits loss revenue revenues cost costs expense expenses tax assets equity eps
+""".split())
+
+
+def question_words(reg: Registry) -> frozenset[str]:
+    from filingLens.retrieval.search import STOPWORDS
+
+    words = set(QUESTION_WORDS) | set(STOPWORDS) | set(NUMBER_WORDS) | set(MONTHS)
+    phrases = [*DERIVED_PHRASES, *DERIVED, *reg.metrics]
+    for m in reg.metrics.values():
+        phrases += [*m.synonyms, m.desc]
+    for ph in phrases:
+        words.update(re.findall(r"[a-z0-9]+", ph.lower().replace("_", " ")))
+    return frozenset(words)

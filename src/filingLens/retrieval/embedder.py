@@ -58,7 +58,11 @@ class BgeM3Embedder:
             want = "cuda" if torch.cuda.is_available() else "cpu"
         try:
             self.model = self._load(model, want)
-        except torch.OutOfMemoryError:              # GPU busy (e.g. a local LLM server)
+        except (torch.OutOfMemoryError, RuntimeError) as e:   # GPU busy (e.g. a local LLM)
+            # newer torch raises AcceleratorError (a RuntimeError) when the CUDA context itself
+            # cannot be created; only out-of-memory errors fall back to the CPU
+            if want == "cpu" or "out of memory" not in str(e).lower():
+                raise
             torch.cuda.empty_cache()
             want = "cpu"
             self.model = self._load(model, want)

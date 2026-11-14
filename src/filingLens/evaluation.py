@@ -109,7 +109,7 @@ def score(case: Case, r: Response) -> CaseResult:
         checks["refuse"] = refused
     if e.get("no_value"):
         checks["no_value"] = not any(v is not None for v in _numbers_in(rows))
-    if e.get("answer_contains") and r.mode == "llm":
+    if e.get("answer_contains") and (r.mode == "llm" or r.answer.used_llm):
         text = (r.answer.text or "").lower()
         checks["answer"] = bool(text) and all(s.lower() in text for s in e["answer_contains"])
     fabricated = (unsupported_numbers(r.answer.text, evidence(res) or "", case.q)
