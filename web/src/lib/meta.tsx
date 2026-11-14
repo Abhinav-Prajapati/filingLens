@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { api, type CompanyInfo, type Health, type MetricInfo } from './api'
+import { api, clearCache, type CompanyInfo, type Health, type MetricInfo } from './api'
 import { humanise } from './format'
 import { setCompanyOrder } from './theme'
 
@@ -13,6 +13,7 @@ interface Meta {
   metricLabel: (id: string | null | undefined) => string
   companyName: (ticker: string | null | undefined) => string
   retry: () => void
+  refresh: () => void                 // reload quietly (after a company is added or ingested)
 }
 
 const Ctx = createContext<Meta | null>(null)
@@ -46,6 +47,7 @@ export function MetaProvider({ children }: { children: ReactNode }) {
       metricLabel: (id) => (id ? labels[id] ?? humanise(id) : ''),
       companyName: (t) => (t ? names[t] ?? t : ''),
       retry: () => { setReady(false); setAttempt((a) => a + 1) },
+      refresh: () => { clearCache(); setAttempt((a) => a + 1) },
     }
   }, [companies, metrics, health, error, ready])
 

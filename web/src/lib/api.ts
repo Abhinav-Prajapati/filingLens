@@ -32,9 +32,42 @@ export interface CompanyInfo {
   latest_quarter: string | null; annual_reports: string[]; has_data: boolean
 }
 export interface MetricInfo { id: string; label: string; kind: 'flow' | 'stock' | 'ratio'; unit: string }
+export type Role = 'admin' | 'user'
+export interface User { id: string; email: string; role: Role; is_active: boolean; is_superuser: boolean; is_verified: boolean }
 export interface Health { status: 'ok'; facts: number; companies_with_data: number; chunks: number; vector_index: boolean; llm: string | null }
 
 const BASE: string = import.meta.env.VITE_API ?? (import.meta.env.DEV ? '/api' : '')
+
+// admin (role "admin"): see filingLens.api.admin
+export interface ListedRow {
+  symbol: string; name: string; series: string; isin: string; listed_on: string | null; tracked: boolean
+  xbrl_files: number; fys: string[]; latest_quarter: string | null; annual_reports: string[]; passages: number
+  stored: number                                      // files in the S3 bucket
+  pending_xbrl: number; pending_reports: number      // in the inbox, not ingested yet
+}
+export interface ListedCompanies { total: number; list_updated: string | null; storage: boolean; rows: ListedRow[] }
+export type JobStage = 'queued' | 'listing' | 'downloading' | 'ingesting' | 'done' | 'failed'
+export interface Job {
+  symbol: string; name: string; stage: JobStage; done: number; total: number; downloaded: number; stored: number
+  failed_files: number; added_company: boolean; message: string; error: string | null; queued_at: string
+  started_at: string | null; finished_at: string | null; facts: number | null; years: string[]; passages: number | null
+}
+export interface StoredFile { key: string; name: string; kind: string; size: number; modified: string; url: string }
+export interface NSEFile { kind: 'xbrl' | 'annual_report'; period: string; fy: string | null; scope: string | null; status: 'have' | 'new' }
+export interface NSEAvailability {
+  symbol: string; checked_at: string; xbrl_filings: number; full_years: string[]; quarters: string[]
+  annual_reports: string[]; new_files: number; files: NSEFile[]; warning: string | null
+}
+
+/** Fired when the API answers 401 (session missing or expired); the auth layer signs out. */
+export const UNAUTHORIZED = 'filinglens:unauthorized'
+
+/** fastapi-users error codes -> what to tell the person. */
+const AUTH_MESSAGES: Record<string, string> = {
+  LOGIN_BAD_CREDENTIALS: 'Wrong email or password.',
+  LOGIN_USER_NOT_VERIFIED: 'This account is not verified yet.',
+  REGISTER_USER_ALREADY_EXISTS: 'An account with this email already exists. Sign in instead.',
+}
 
 export class ApiError extends Error {
   status: number
@@ -49,13 +82,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(0, 'Cannot reach the filingLens API. Is `filinglens serve` running on port 8765?')
   }
   if (!res.ok) {
+    if (res.status === 401 && !path.startsWith('/auth/')) window.dispatchEvent(new Event(UNAUTHORIZED))
     let msg = `${res.status} ${res.statusText}`
     try {
-      const body = await res.json()
-      if (typeof body.detail === 'string') msg = body.detail
+      const { detail } = await res.json()
+      if (typeof detail === 'string') msg = AUTH_MESSAGES[detail] ?? detail
+      else if (detail?.reason) msg = detail.reason                       // invalid password
+      else if (Array.isArray(detail) && detail[0]?.msg) msg = detail[0].msg  // validation error
     } catch { /* keep the status line */ }
     throw new ApiError(res.status, msg)
   }
+  if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
 }
 
@@ -79,6 +116,32 @@ function get<T>(path: string): Promise<T> {
     cache.set(path, p)
   }
   return cache.get(path) as Promise<T>
+}
+
+/** Forget cached data (on sign-in / sign-out, so one account never sees another's cache). */
+export function clearCache() { cache.clear() }
+
+export const auth = {
+  me: () => request<User>('/auth/me'),
+  login: (email: string, password: string) =>
+    request<void>('/auth/login', {
+      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ username: email, password }),
+    }),
+  register: (email: string, password: string) =>
+    request<User>('/auth/register', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }),
+    }),
+  logout: () => request<void>('/auth/logout', { method: 'POST' }),
+}
+
+export const admin = {
+  companies: () => request<ListedCompanies>('/admin/companies'),
+  download: (symbol: string) => request<Job>(`/admin/companies/${encodeURIComponent(symbol)}/download`, { method: 'POST' }),
+  jobs: () => request<Job[]>('/admin/jobs'),
+  files: (symbol: string) => request<StoredFile[]>(`/admin/companies/${encodeURIComponent(symbol)}/files`),
+  nse: (symbol: string, refresh = false, signal?: AbortSignal) =>
+    request<NSEAvailability>(`/admin/companies/${encodeURIComponent(symbol)}/nse${refresh ? '?refresh=true' : ''}`, { signal }),
 }
 
 export const api = {

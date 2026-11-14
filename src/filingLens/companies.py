@@ -38,6 +38,7 @@ class ListedCompany:
     name: str
     isin: str
     series: str = "EQ"
+    listed_on: str = ""               # "06-OCT-2008", as NSE writes it
 
 
 def fetch_equity_list(client, path: Path = DEFAULT_LIST_PATH) -> bool:  # type: ignore[no-untyped-def]
@@ -53,7 +54,8 @@ def load_equity_list(path: Path = DEFAULT_LIST_PATH) -> list[ListedCompany]:
         rows = [{k.strip().upper(): (v or "").strip() for k, v in r.items() if k}
                 for r in csv.DictReader(f)]
     return [ListedCompany(r.get("SYMBOL", ""), r.get("NAME OF COMPANY", ""),
-                          r.get("ISIN NUMBER", ""), r.get("SERIES", ""))
+                          r.get("ISIN NUMBER", ""), r.get("SERIES", ""),
+                          r.get("DATE OF LISTING", ""))
             for r in rows if r.get("SYMBOL")]
 
 

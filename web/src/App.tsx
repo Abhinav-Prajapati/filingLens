@@ -1,15 +1,22 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, MotionConfig, motion } from 'motion/react'
-import { App as AntApp, Badge, Button, ConfigProvider, Layout, Menu, Popconfirm, Result, Segmented, Tag, Tooltip, theme, type ThemeConfig } from 'antd'
 import {
-  DashboardOutlined, DeleteOutlined, DesktopOutlined, MessageOutlined, MoonOutlined, ReloadOutlined, SunOutlined,
+  App as AntApp, Avatar, Badge, Button, ConfigProvider, Dropdown, Layout, Menu, Popconfirm, Result, Spin, Tag, Tooltip, theme,
+  type ThemeConfig,
+} from 'antd'
+import {
+  DashboardOutlined, DatabaseOutlined, DeleteOutlined, LogoutOutlined, MessageOutlined, ReloadOutlined,
 } from '@ant-design/icons'
+import { AuthProvider, useAuth } from './lib/auth'
 import { MetaProvider, useMeta } from './lib/meta'
-import { setThemePref, useIsDark, useThemePref, useTokens, seriesColor, type ThemePref } from './lib/theme'
+import { useIsDark, useTokens, seriesColor } from './lib/theme'
+import { AdminData } from './components/AdminData'
 import { AskPage, THREAD_KEY } from './components/AskPage'
+import { Brand, ThemeSwitch } from './components/Chrome'
 import { ExplorePage } from './components/ExplorePage'
+import { Welcome } from './components/Welcome'
 
-type Page = 'ask' | 'explore'
+type Page = 'ask' | 'explore' | 'data'
 
 const SANS = "'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif"
 const MONO = "'IBM Plex Mono', ui-monospace, Menlo, monospace"
@@ -23,6 +30,7 @@ function antdTheme(dark: boolean): ThemeConfig {
     algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm,
     token: {
       colorPrimary: c.accent,
+      colorLink: c.accent,
       colorInfo: dark ? '#3987e5' : '#2a78d6',
       colorSuccess: dark ? '#2fb52f' : '#006300',
       colorError: dark ? '#f07a6e' : '#b42318',
@@ -72,34 +80,63 @@ export default function App() {
     <ConfigProvider theme={config}>
       <AntApp>
         <MotionConfig reducedMotion="user">
-          <MetaProvider>
-            <Shell />
-          </MetaProvider>
+          <AuthProvider>
+            <Gate />
+          </AuthProvider>
         </MotionConfig>
       </AntApp>
     </ConfigProvider>
   )
 }
 
+/** Signed out: home page and sign-in. Signed in: the app. */
+function Gate() {
+  const { status, retry } = useAuth()
+  if (status === 'loading') return <div className="gate-wait"><Spin size="large" /></div>
+  if (status === 'offline') {
+    return (
+      <Result
+        status="warning"
+        title="Can’t reach the filingLens API"
+        subTitle={<>Start it with <code>filinglens serve</code>, then try again.</>}
+        extra={<Button type="primary" icon={<ReloadOutlined />} onClick={retry}>Try again</Button>}
+      />
+    )
+  }
+  if (status === 'signed-out') return <Welcome />
+  return <MetaProvider><Shell /></MetaProvider>
+}
+
 const PAGES: Record<Page, { title: string; sub: string }> = {
   ask: { title: 'Ask', sub: 'Questions in English or Hinglish, answered from filed figures' },
   explore: { title: 'Explore', sub: 'Size, growth, margins and cost structure across coverage' },
+  data: { title: 'Data', sub: 'Every NSE-listed company: what is held here and what NSE has' },
 }
 
 function Shell() {
   const { ready, error, retry } = useMeta()
-  const [page, setPage] = useState<Page>(() => (location.hash === '#explore' ? 'explore' : 'ask'))
-  useEffect(() => { history.replaceState(null, '', (location.search || '') + (page === 'explore' ? '#explore' : '#')) }, [page])
+  const { user, signOut } = useAuth()
+  const isAdmin = user?.role === 'admin'
+  const [page, setPage] = useState<Page>(() => {
+    const h = location.hash.replace('#', '')
+    return h === 'explore' ? 'explore' : h === 'data' && isAdmin ? 'data' : 'ask'
+  })
+  useEffect(() => { history.replaceState(null, '', (location.search || '') + (page === 'ask' ? '#' : `#${page}`)) }, [page])
 
   const clear = () => {
     try { localStorage.removeItem(THREAD_KEY) } catch { /* storage off */ }
     location.reload()
   }
+  const out = async () => {
+    try { localStorage.removeItem(THREAD_KEY) } catch { /* storage off */ }   // the next person starts clean
+    history.replaceState(null, '', location.pathname + location.search)
+    await signOut()
+  }
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Side page={page} setPage={setPage} />
-      <Layout>
+      <Side page={page} setPage={setPage} isAdmin={isAdmin} />
+      <Layout className="app-main">
         <Layout.Header className="app-header">
           <div className="crumb">
             <h1>{PAGES[page].title}</h1>
@@ -112,6 +149,32 @@ function Shell() {
               </Popconfirm>
             )}
             <ThemeSwitch />
+            {user && (
+              <Dropdown
+                trigger={['click']}
+                placement="bottomRight"
+                menu={{
+                  items: [
+                    {
+                      key: 'me', disabled: true,
+                      label: (
+                        <div className="user-card">
+                          <span className="user-email">{user.email}</span>
+                          <Tag color={user.role === 'admin' ? 'gold' : undefined} style={{ margin: 0, width: 'fit-content' }}>{user.role}</Tag>
+                        </div>
+                      ),
+                    },
+                    { type: 'divider' },
+                    { key: 'out', icon: <LogoutOutlined />, label: 'Sign out', onClick: out },
+                  ],
+                }}
+              >
+                <Button type="text" className="user-btn" aria-label={`Account: ${user.email}`}>
+                  <Avatar size={24} className="user-avatar">{user.email[0].toUpperCase()}</Avatar>
+                  <span className="user-btn-email">{user.email}</span>
+                </Button>
+              </Dropdown>
+            )}
           </div>
         </Layout.Header>
         <Layout.Content className="app-content">
@@ -129,7 +192,7 @@ function Shell() {
                 initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.22 }}
                 style={{ minHeight: 'calc(100vh - 84px)', display: 'flex', flexDirection: 'column' }}
               >
-                {page === 'ask' ? <AskPage /> : <ExplorePage />}
+                {page === 'ask' ? <AskPage /> : page === 'explore' ? <ExplorePage /> : isAdmin ? <AdminData /> : null}
               </motion.div>
             </AnimatePresence>
           )}
@@ -139,39 +202,12 @@ function Shell() {
   )
 }
 
-function ThemeSwitch() {
-  const pref = useThemePref()
-  return (
-    <Segmented<ThemePref>
-      size="small"
-      value={pref}
-      onChange={setThemePref}
-      options={[
-        { value: 'dark', icon: <MoonOutlined />, title: 'Dark' },
-        { value: 'light', icon: <SunOutlined />, title: 'Light' },
-        { value: 'system', icon: <DesktopOutlined />, title: 'Follow the system' },
-      ]}
-      aria-label="Theme"
-    />
-  )
-}
-
-function Side({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
+function Side({ page, setPage, isAdmin }: { page: Page; setPage: (p: Page) => void; isAdmin: boolean }) {
   const { companies, health, error } = useMeta()
   const t = useTokens()
   return (
     <Layout.Sider className="app-sider" width={268} breakpoint="lg" collapsedWidth={0} theme={t.dark ? 'dark' : 'light'}>
-      <div className="brand">
-        <svg viewBox="0 0 32 32" aria-hidden>
-          <rect width="32" height="32" rx="8" fill="var(--ink)" />
-          <path d="M9 23V9h9M9 16h6" stroke="var(--page)" strokeWidth="2.6" fill="none" strokeLinecap="round" />
-          <circle cx="22.5" cy="20.5" r="3.6" stroke="var(--accent)" strokeWidth="2.4" fill="none" />
-        </svg>
-        <div>
-          <div className="brand-name">filing<em>Lens</em></div>
-          <div className="brand-sub">NSE FILINGS · VERIFIED</div>
-        </div>
-      </div>
+      <Brand />
 
       <Menu
         mode="inline"
@@ -180,6 +216,10 @@ function Side({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
         items={[
           { key: 'ask', icon: <MessageOutlined />, label: 'Ask' },
           { key: 'explore', icon: <DashboardOutlined />, label: 'Explore' },
+          ...(isAdmin ? [{
+            type: 'group' as const, key: 'admin', label: 'Admin',
+            children: [{ key: 'data', icon: <DatabaseOutlined />, label: 'Data' }],
+          }] : []),
         ]}
       />
 

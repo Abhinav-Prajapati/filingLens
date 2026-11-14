@@ -4,17 +4,42 @@ Facts come from a verified database (XBRL), never from an LLM. See the V1 build 
 
 ## Status
 - [x] Phase 1: `domain` (fiscal, units, models, registry.yaml)
-- [x] Phase 2: `storage` (schema, db, FactRepo, ValidationRepo)
+- [x] Phase 2: `storage` (Postgres schema, db, FactRepo, ValidationRepo, S3 object store)
 - [x] Phase 3: `ingest` (xbrl parse, canonical facts, validate, tag audit, pipeline, CLI)
 - [x] Phase 4: `ingest/pdf` + `ingest/calibrate` (pages, chunks, FTS, page citations)
-- [x] Phase 5: `retrieval` (BGE-M3 embeddings in vectors.npy, FTS5 keyword, RRF hybrid search)
+- [x] Phase 5: `retrieval` (BGE-M3 embeddings in vectors.npy, Postgres full-text keyword, RRF hybrid search)
 - [x] Phase 6: `analytics` (YoY, CAGR, margins, trends, unit-safe comparisons)
 - [x] LLM planner (`llm/`): question -> one validated tool call (OpenAI-compatible API)
 - [x] Rule planner + answer service (`nlu/`, `service.py`): works without an LLM
 - [x] Eval set + harness (`evals/`, `evaluation.py`)
 - [x] HTTP API with typed, chart-ready views (`api/`, `views.py`)
 
-## Quickstart
+## Running with Docker
+
+Four services (`docker-compose.yml`), every port on 127.0.0.1:
+
+| service | what | port |
+|---|---|---|
+| `postgres` | all data: figures, report text and its keyword index, accounts | 5442 |
+| `seaweedfs` | S3-compatible store for downloaded filings (bucket `filinglens`) | 8333 (S3 API) |
+| `s3manager` | small web UI to browse and download the bucket's files | http://127.0.0.1:8090 |
+| `app` | the API and web UI (GPU for BGE-M3; host network, so a local llama-server works as configured) | http://127.0.0.1:8765 |
+
+```bash
+cp .env.example .env              # set the passwords / keys (and the LLM, optional)
+docker compose up -d --build      # first build downloads CUDA torch: several GB
+docker compose exec app filinglens companies --refresh       # NSE's list of listed companies
+docker compose exec -it app filinglens users create-admin you@example.com
+```
+
+Open http://127.0.0.1:8765, sign in, and add companies from **Admin → Data** (Download).
+
+Infrastructure only, with the app on the host: `docker compose up -d postgres seaweedfs s3manager`,
+then `filinglens serve` (it reads `FILINGLENS_DATABASE_URL` and `FILINGLENS_S3_*` from `.env`).
+Stop a host `filinglens serve` before starting the `app` service: both use port 8765.
+
+## Quickstart (host)
+    docker compose up -d postgres seaweedfs s3manager           # Postgres + S3 (see above)
     uv sync --extra dev --extra llm --extra api --extra embed   # embed: BGE-M3 (~2 GB, GPU optional)
     source .venv/bin/activate
     filinglens companies                    # download NSE's list of listed companies (once)
@@ -96,7 +121,7 @@ k=10: recall@5 went from 7/11 (k=60, all words) to 9/11. Romanised Hinglish is t
 ## Ingesting everything
     work/inbox/TCS/xbrl/*.xml          # result filings (NSE XBRL)
     work/inbox/TCS/annual_report/*.pdf # annual reports
-    filinglens ingest work/inbox --db work/filingLens.db     # XBRL -> PDFs -> calibration
+    filinglens ingest work/inbox                             # XBRL -> PDFs -> calibration
     filinglens inspect-pdf report.pdf [--page 91]            # no database: sections, chunks
 
 PDFs are read with PyMuPDF. Two-page spreads are split into halves ("panels") so each
@@ -108,7 +133,7 @@ column). TCS FY24: 14/14 facts verified, all on PDF page 91 (printed pp. 178-179
 ## Parsing an XBRL filing
     filinglens inspect path/to/TCS_Annual_INDAS_....xml        # no database; prints facts, checks, audit
     filinglens inspect path/to/file.xml --json                 # same, machine-readable
-    filinglens ingest-xbrl work/inbox/TCS/xbrl --db work/filingLens.db   # files or folders
+    filinglens ingest-xbrl work/inbox/TCS/xbrl               # files or folders
 
 In Python:
 
@@ -150,6 +175,47 @@ series of `(period, value)` points per line, `null` = gap), `stats` (value, chan
 Generate frontend types from `/openapi.json`. `filinglens ask --json` prints the same view.
 Allowed browser origins: `FILINGLENS_CORS` (default localhost:3000 and :5173).
 
+### Accounts and roles
+
+Every data endpoint needs a signed-in user; `/health`, the auth endpoints and the web UI's files
+are public. Accounts are handled by [fastapi-users](https://fastapi-users.github.io/fastapi-users/)
+and stored in Postgres (tables `user` and `access_token`). Passwords are
+argon2-hashed; the session is an HttpOnly, SameSite=Lax cookie kept in the database for 7 days,
+so signing out ends it on the server.
+
+| endpoint | does |
+|---|---|
+| `POST /auth/register` `{"email", "password"}` | open sign-up (8+ characters); new accounts are `user` |
+| `POST /auth/login` form `username=<email>&password=...` | sets the session cookie (204) |
+| `POST /auth/logout` | ends the session |
+| `GET /auth/me` | the signed-in account and its `role` |
+
+Two roles, `admin` and `user`. Sign-up can't choose one; make an admin from the command line
+(creates the account, asking for a password, or promotes an existing one):
+
+```bash
+filinglens users create-admin you@example.com
+```
+
+Routes are restricted with `Depends(auth.require_role("admin"))` (`src/filingLens/api/auth.py`).
+
+Admin only (`src/filingLens/api/admin.py`; in the web UI: **Admin → Data**):
+
+| endpoint | returns |
+|---|---|
+| `GET /admin/companies` | every NSE-listed equity (from `work/nse_equity_list.csv`) with what is held here: tracked or not, ingested XBRL files and their years, latest quarter, annual reports, report passages, files in the S3 bucket, inbox files not ingested yet |
+| `GET /admin/companies/{symbol}/nse` | what NSE has for one company now (XBRL results and annual reports, last 5 years), each marked have / new; about 10 s, rate-limited, cached for an hour (`?refresh=true` to re-check) |
+| `POST /admin/companies/{symbol}/download` | queue a download: every filing NSE has that isn't held → S3 bucket → ingest (adds an untracked company first) |
+| `GET /admin/companies/{symbol}/download`, `GET /admin/jobs` | progress of downloads (this server session) |
+| `GET /admin/companies/{symbol}/files` | the company's files in the bucket, with 15-minute download links |
+
+The list is local and quick; NSE is asked one request at a time, so downloads run one company
+after another. After a download the company can be asked about at once (figures and keyword
+search); run `filinglens index` for semantic search (it uses the GPU, which llama-server shares).
+Files are kept at `s3://filinglens/filings/<TICKER>/<xbrl|annual_report>/`; `work/inbox` is the
+local working copy the parsers read. Refresh the equity list with `filinglens companies --refresh`. Settings: `FILINGLENS_COOKIE_SECURE=1` when served over HTTPS;
+`FILINGLENS_AUTH_SECRET` signs reset/verification tokens (not used yet).
+
 ## Web UI
 
 ```bash
@@ -158,7 +224,8 @@ npm run dev                      # http://localhost:5173 (proxies the API on :87
 npm run build                    # web/dist; `filinglens serve` then serves the UI at http://127.0.0.1:8765/
 ```
 
-React + Ant Design 6 + ECharts (`web/`), dark theme by default. **Ask** is a research thread: each answer is a card with the written
+React + Ant Design 6 + ECharts (`web/`), dark theme by default. Signed out, it shows a home
+page with sign-in and sign-up; signed in, the header has the account menu (email, role, sign out). **Ask** is a research thread: each answer is a card with the written
 summary, headline tiles (total change, CAGR), a chart, the sortable table and every source with
 its page. The chart type follows the shape of the data, and a switcher offers every form that fits:
 
@@ -180,8 +247,10 @@ missing values stay blank. Link parameters: `?q=<question>` asks on load, `?them
 so Claude Code can look up antd 6 component APIs when editing the UI.
 
 ## Dev
-    pip install -e ".[dev]"
-    pytest
+    docker compose up -d postgres                # tests need Postgres
+    uv sync --extra dev --extra api --extra llm
+    pytest                                       # each test gets an empty schema in database
+                                                 # filinglens_test (FILINGLENS_TEST_DATABASE_URL)
 
 ## Evaluation
     filinglens eval --mode rules                 # seconds; rule-based planner + search

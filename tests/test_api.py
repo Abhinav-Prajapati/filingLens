@@ -16,16 +16,22 @@ NP = {"FY23": 42303.0, "FY24": 46099.0}
 
 @pytest.fixture
 def client(tmp_path):
-    db = tmp_path / "f.db"
-    con = connect(db)
+    con = connect()
     FactRepo(con).upsert_facts(
         [make_fact(fy=fy, value=v) for fy, v in REV.items()]
         + [make_fact(metric="net_profit", fy=fy, value=v) for fy, v in NP.items()]
         + [make_fact(ticker="INFY", fy="FY24", value=153670.0)])
     con.close()
-    with TestClient(create_app(db, llm=None, registry=load_registry(),
+    with TestClient(create_app(None, data_dir=tmp_path, store=None, llm=None, registry=load_registry(),
                                equity_list=tmp_path / "none.csv", web_dir=None)) as c:
+        sign_up(c)
         yield c
+
+
+def sign_up(c, email="ana@example.com", password="correct horse 42"):
+    assert c.post("/auth/register", json={"email": email, "password": password}).status_code == 201
+    r = c.post("/auth/login", data={"username": email, "password": password})
+    assert r.status_code == 204, r.text
 
 
 def test_trend_gives_table_chart_and_stats(client):
@@ -95,10 +101,12 @@ def test_serves_built_web_ui_without_shadowing_the_api(tmp_path):
     web = tmp_path / "dist"
     web.mkdir()
     (web / "index.html").write_text("<!doctype html><title>filingLens</title>")
-    connect(tmp_path / "f.db").close()
-    app = create_app(tmp_path / "f.db", llm=None, registry=load_registry(),
+    connect().close()
+    app = create_app(None, data_dir=tmp_path, store=None, llm=None, registry=load_registry(),
                      equity_list=tmp_path / "none.csv", web_dir=web)
     with TestClient(app) as c:
         assert "filingLens" in c.get("/").text
         assert c.get("/health").json()["status"] == "ok"
+        assert c.get("/metrics").status_code == 401          # data needs a signed-in user
+        sign_up(c)
         assert c.get("/metrics").status_code == 200
