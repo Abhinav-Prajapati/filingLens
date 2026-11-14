@@ -11,6 +11,15 @@ Facts come from a verified database (XBRL), never from an LLM. See the V1 build 
 - [x] Phase 6: `analytics` (YoY, CAGR, margins, trends, unit-safe comparisons)
 - [x] LLM planner (`llm/`): question -> one validated tool call (OpenAI-compatible API)
 
+## Asking questions
+`filinglens ask` works with or without an LLM. Every path runs the same tools on the same data:
+- LLM configured: the model picks the tool and writes a checked answer.
+- No LLM, `--no-llm`, or the LLM fails (down, rate-limited, no valid call): a rule-based
+  planner (`nlu/rules.py`: companies, metrics, years, scope, question type from registry.yaml)
+  plans simple questions; the result is the table without a written summary.
+- No metric recognised: the most relevant report passages, with page sources.
+The pipeline lives in `service.py` (`AnswerService.answer`), shared by the CLI and the API.
+
 ## Asking questions (LLM)
     cp .env.example .env            # set FILINGLENS_LLM_BASE_URL / _API_KEY / _MODEL
     uv sync --extra llm
@@ -101,3 +110,14 @@ Money values in XBRL are absolute INR (`decimals="-7"`); canonical `value` = INR
 ## Dev
     pip install -e ".[dev]"
     pytest
+
+## Evaluation
+    filinglens eval --mode rules                 # seconds; rule-based planner + search
+    filinglens eval --mode llm --limit 20        # real model (mind provider rate limits)
+    filinglens eval --tag compare --tag hinglish # subsets by tag, or --id c03
+`evals/questions.yaml` holds ~60 questions (values, quarters, trends, ratios, comparisons,
+text, refusals, missing data, Hinglish, tricky wording) with expected tool, arguments, values
+and pages. Each run prints a scorecard (right tool / arguments / values / pages, correct
+refusals, no number when data is missing, fabricated numbers - must be 0), compares it with
+the previous run, and saves the details to work/eval/. Update expected values when the data
+changes, and keep the questions different from the prompt examples in llm/examples.yaml.

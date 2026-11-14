@@ -54,7 +54,8 @@ def compute(name: str, num: list[Fact], den: list[Fact]) -> tuple[list[Fact], li
 def load_series(get_series: GetSeries, registry: Registry, ticker: str, metric: str,
                 scope: str = "consolidated", period_type: str = "FY") -> tuple[list[Fact], list[str]]:
     """A stored metric, or a derived one computed from its two inputs. Balance-sheet (stock)
-    metrics are point-in-time, so an FY request reads their year-end INSTANT values."""
+    metrics are point-in-time, so an FY request reads their fiscal-year-end (31 March) INSTANT
+    values; quarter-end balance sheets from quarterly filings are left out."""
     if metric in DERIVED:
         f = DERIVED[metric]
         return compute(metric, get_series(ticker, f.numerator, scope, period_type),
@@ -62,7 +63,10 @@ def load_series(get_series: GetSeries, registry: Registry, ticker: str, metric: 
     spec = registry.metrics.get(metric)
     if spec is None:
         raise KeyError(f"unknown metric {metric!r}")
-    if spec.kind == "stock" and period_type == "FY":
+    year_end_only = spec.kind == "stock" and period_type == "FY"
+    if year_end_only:
         period_type = "INSTANT"
     facts = get_series(ticker, metric, scope, period_type)
+    if year_end_only:      # quarterly filings add mid-year balance sheets; a year means 31 March
+        facts = [f for f in facts if f.period_end[5:7] == "03"]
     return facts, ([] if facts else [f"{ticker} {metric} ({scope}, {period_type}): no data"])

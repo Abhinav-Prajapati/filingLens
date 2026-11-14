@@ -23,6 +23,7 @@ import json
 import re
 import sqlite3
 import sys
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -551,8 +552,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
 
 def _llm_context(con: sqlite3.Connection, vectors: Path):  # type: ignore[no-untyped-def]
+    import functools
+
     from filingLens.llm.executor import Context
 
+    @functools.cache                              # load the embedding model once per process
     def searcher():  # type: ignore[no-untyped-def]
         from filingLens.retrieval.index import VectorIndex
         from filingLens.retrieval.search import Searcher
@@ -611,10 +615,9 @@ def _print_tool_result(res, evidence: bool = True) -> None:  # type: ignore[no-u
 
 
 def cmd_ask(args: argparse.Namespace) -> int:
-    from filingLens.llm.answer import Answer, compose_answer
     from filingLens.llm.client import LLMConfig, make_client
-    from filingLens.llm.planner import ask
     from filingLens.llm.prompt import build_system_prompt
+    from filingLens.service import AnswerService
 
     cfg = LLMConfig.from_env()
     with _db(args.db) as con:
@@ -622,34 +625,29 @@ def cmd_ask(args: argparse.Namespace) -> int:
         if args.show_prompt:
             print(build_system_prompt(ctx.registry, ctx.latest_fy()))
             return 0
-        if cfg.missing():
-            print(f"ERROR: LLM not configured; set {', '.join(cfg.missing())} (env or .env)",
-                  file=sys.stderr)
-            return 2
-        client = make_client(cfg)
-        res = ask(args.question, client, ctx)
-        ans = (compose_answer(args.question, res.result, client)
-               if res.ok and res.result and not args.no_answer else Answer())
-        if args.json:
-            print(json.dumps({"question": res.question, "tool": res.tool, "args": res.args,
-                              "attempts": res.attempts, "errors": res.errors,
-                              "seconds": res.seconds, "answer": ans.__dict__,
-                              "result": res.result.__dict__ if res.result else None},
-                             indent=1, default=str))
-            return 0 if res.ok else 1
-        print(f"→ {res.tool}({json.dumps(res.args, ensure_ascii=False)})   "
-              f"[{res.seconds}s, attempts {res.attempts}]")
-        for e in res.errors:
-            print(f"  model error fixed by retry: {e}" if res.ok else f"  error: {e}")
-        print()
-        if ans.text:
-            print(f"{ans.text}\n")
-        elif ans.rejected:
-            print(f"(no written answer: {ans.rejected}; showing the data instead)\n")
-        if res.result:
-            show_passages = args.evidence or not ans.text
-            _print_tool_result(res.result, evidence=show_passages)
-    return 0 if res.ok else 1
+        llm = None if args.no_llm or cfg.missing() else make_client(cfg)
+        reason = "--no-llm" if args.no_llm else f"not configured: set {', '.join(cfg.missing())}"
+        r = AnswerService(ctx, llm, write_answer=not args.no_answer,
+                          no_llm_reason=reason).answer(args.question)
+    if args.json:
+        print(json.dumps(r.to_dict(), indent=1, default=str, ensure_ascii=False))
+        return 0 if r.ok else 1
+    how = {"llm": "LLM", "rules": "rules", "search": "search"}[r.mode]
+    print(f"→ {r.tool}({json.dumps(r.args, ensure_ascii=False)})   "
+          f"[{how}, {r.seconds}s" + (f", attempts {r.attempts}" if r.mode == "llm" else "")
+          + "]")
+    for n in r.notes:
+        print(f"  {n}")
+    for e in r.errors:
+        print(f"  {'model error fixed by retry' if r.mode == 'llm' and r.ok else 'error'}: {e}")
+    print()
+    if r.answer.text:
+        print(f"{r.answer.text}\n")
+    elif r.answer.rejected:
+        print(f"(no written answer: {r.answer.rejected}; showing the data instead)\n")
+    if r.result:
+        _print_tool_result(r.result, evidence=args.evidence or not r.answer.text)
+    return 0 if r.ok or (r.result and r.result.clarify) else 1
 
 
 def cmd_llm_check(args: argparse.Namespace) -> int:
@@ -676,6 +674,72 @@ def cmd_llm_check(args: argparse.Namespace) -> int:
     print(f"\n{ok}/{len(examples)} picked the expected tool (note: these examples are also in "
           "the prompt, so this checks wiring, not accuracy)")
     return 0 if ok == len(examples) else 1
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    from filingLens.evaluation import load_cases, previous_summary, run, save, summarise
+    from filingLens.llm.client import LLMConfig, make_client
+    from filingLens.service import AnswerService
+
+    cases = load_cases(Path(args.file))
+    if args.tag:
+        cases = [c for c in cases if set(args.tag) & set(c.tags)]
+    if args.id:
+        cases = [c for c in cases if c.id in args.id]
+    cases = cases[: args.limit] if args.limit else cases
+    cfg = LLMConfig.from_env()
+    modes = ["rules", "llm"] if args.mode == "both" else [args.mode]
+    if "llm" in modes and cfg.missing():
+        print(f"LLM not configured ({', '.join(cfg.missing())}): evaluating rules only")
+        modes = ["rules"]
+    out_dir, code = Path(args.out), 0
+    for mode in modes:
+        with _db(args.db) as con:
+            ctx = _llm_context(con, _vectors_path(args))
+            llm = make_client(cfg) if mode == "llm" else None
+            svc = AnswerService(ctx, llm, no_llm_reason="rules mode")
+            label = f"{cfg.model} @ {cfg.base_url}" if llm else "rule-based planner"
+            print(f"\n=== {mode}: {len(cases)} questions  ({label})")
+
+            def show(i: int, r) -> None:  # type: ignore[no-untyped-def]
+                bad = [k for k, v in r.checks.items() if v is False]
+                bad += ["FABRICATED " + ",".join(r.fabricated)] if r.fabricated else []
+                print(f"  {'✓' if r.passed else '✗'} {r.id:4s} {r.mode:6s} {r.tool!s:15s} "
+                      f"{r.seconds:6.2f}s  {r.q[:52]:52s} {' '.join(bad)}")
+
+            results = run(cases, svc, show)
+        summary = summarise(results)
+        meta = {"mode": mode, "model": cfg.model if llm else "rules", "cases": args.file,
+                "date": time.strftime("%Y-%m-%d %H:%M")}
+        path = save(results, summary, meta, out_dir)
+        prev = previous_summary(out_dir, mode, before=path)
+        _print_scorecard(summary, prev)
+        print(f"saved: {path}")
+        code = code or (1 if summary["fabricated_numbers"] else 0)
+    return code
+
+
+def _print_scorecard(s: dict, prev: dict | None) -> None:
+    def pct(c: dict) -> str:
+        return f"{c['ok']}/{c['n']} ({c['ok'] / c['n']:.0%})" if c["n"] else "-"
+
+    def was(key: str) -> str:
+        if not prev or not prev["checks"][key]["n"]:
+            return ""
+        return f"   (last run {prev['checks'][key]['ok'] / prev['checks'][key]['n']:.0%})"
+
+    labels = {"tool": "right tool", "args": "right arguments", "values": "right values",
+              "pages": "cited the right page", "refuse": "refused when it should",
+              "no_value": "no number when data is missing", "answer": "answer has key facts"}
+    print(f"\n  passed {s['passed']}/{s['questions']} ({s['passed'] / max(s['questions'], 1):.0%})"
+          + (f"   (last run {prev['passed']}/{prev['questions']})" if prev else ""))
+    for k, name in labels.items():
+        print(f"  {name:32s} {pct(s['checks'][k]):16s}{was(k)}")
+    print(f"  {'fabricated numbers':32s} {s['fabricated_numbers']}   (must be 0)")
+    print(f"  {'written answers':32s} {s['written_answers']}")
+    print(f"  {'answered by':32s} " + ", ".join(f"{k} {v}" for k, v in s["answered_by"].items()))
+    print(f"  {'avg seconds / question':32s} {s['avg_seconds']}")
+    print("  by tag: " + ", ".join(f"{t} {pct(c)}" for t, c in s["by_tag"].items()))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -758,7 +822,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--period", default="FY", choices=["FY", "Q"])
     p.add_argument("--normalise", default="none", choices=["none", "index100", "share"])
     p.set_defaults(func=cmd_compare)
-    p = sub.add_parser("ask", help="ask a question in English or Hinglish (needs an LLM)")
+    p = sub.add_parser("ask", help="ask a question in English or Hinglish (LLM if configured, "
+                                   "rules otherwise)")
     p.add_argument("question", nargs="?", default="")
     p.add_argument("--db", default="work/filingLens.db")
     p.add_argument("--vectors")
@@ -766,7 +831,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--show-prompt", action="store_true", help="print the system prompt and exit")
     p.add_argument("--no-answer", action="store_true", help="skip the written answer step")
     p.add_argument("--evidence", action="store_true", help="also print the retrieved passages")
+    p.add_argument("--no-llm", action="store_true", help="use the rule-based planner only")
     p.set_defaults(func=cmd_ask)
+    p = sub.add_parser("eval", help="score the system on evals/questions.yaml")
+    p.add_argument("--mode", default="both", choices=["both", "rules", "llm"])
+    p.add_argument("--file", default="evals/questions.yaml")
+    p.add_argument("--tag", action="append", default=[], help="only these tags, e.g. compare")
+    p.add_argument("--id", action="append", default=[], help="only these question ids")
+    p.add_argument("--limit", type=int, help="first N questions only")
+    p.add_argument("--db", default="work/filingLens.db")
+    p.add_argument("--vectors")
+    p.add_argument("--out", default="work/eval")
+    p.set_defaults(func=cmd_eval)
     p = sub.add_parser("llm-check", help="test the LLM connection on a few example questions")
     p.add_argument("--db", default="work/filingLens.db")
     p.add_argument("--vectors")

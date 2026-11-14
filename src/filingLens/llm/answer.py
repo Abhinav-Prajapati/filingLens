@@ -101,6 +101,15 @@ def _matches(a: str, pool: list[float]) -> bool:
     return any(x == e or round(e, dec) == x for e in pool)
 
 
+def unsupported_numbers(text: str, evidence_text: str, question: str = "") -> list[str]:
+    """Numbers in text (citations ignored) that do not appear in the evidence or question,
+    allowing rounding, year forms and small whole numbers."""
+    pool = [float(n.replace(",", "")) for n in _numbers(evidence_text + " " + question)
+            if n.replace(",", "").replace(".", "", 1).isdigit()]
+    pool += _year_forms(evidence_text + " " + question)
+    return [n for n in _numbers(_CITE.sub("", text)) if not _matches(n, pool)]
+
+
 def check_answer(text: str, evidence_text: str, question: str, pages: set[int],
                  need_citations: bool) -> str | None:
     """Reason to reject, or None if the answer passes."""
@@ -109,11 +118,7 @@ def check_answer(text: str, evidence_text: str, question: str, pages: set[int],
         return "no page citations"
     if cited - pages:
         return f"cites pages that were not retrieved: {sorted(cited - pages)}"
-    pool = [float(n.replace(",", "")) for n in _numbers(evidence_text + " " + question)
-            if n.replace(",", "").replace(".", "", 1).isdigit()]
-    pool += _year_forms(evidence_text + " " + question)
-    body = _CITE.sub("", text)
-    bad = [n for n in _numbers(body) if not _matches(n, pool)]
+    bad = unsupported_numbers(text, evidence_text, question)
     if bad:
         return f"numbers not in the sources: {bad}"
     return None

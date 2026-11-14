@@ -133,6 +133,26 @@ def parse_text_call(content: str) -> ToolCall | None:
     return ToolCall(str(name), args if isinstance(args, dict) else {}, raw=blob) if name else None
 
 
+def reply_from_rejected_call(body: Any, message: str) -> LLMReply | None:
+    """Some providers (e.g. Groq) check tool calls against the schema themselves and answer
+    HTTP 400 "tool call validation failed" instead of returning the call. That is a model
+    mistake, not a failed request: recover what the model generated (``failed_generation``)
+    so our own validator can normalise it or send the model a correction.
+    Returns None for unrelated 400 errors."""
+    err = body.get("error", body) if isinstance(body, dict) else {}
+    err = err if isinstance(err, dict) else {}
+    text = f"{err.get('message', '')} {err.get('code', '')} {message}".lower()
+    if "tool call validation failed" not in text and "tool_use_failed" not in text:
+        return None
+    generated = str(err.get("failed_generation") or "")
+    reason = str(err.get("message") or message).strip()
+    call = parse_text_call(generated) if generated else None
+    if call is not None:                     # our validator decides (it may fix the call)
+        return LLMReply(content=generated, tool_calls=[call])
+    return LLMReply(content=generated, error=f"provider rejected the tool call: {reason}"
+                    + (f" (model wrote: {generated[:200]})" if generated else ""))
+
+
 class OpenAICompatClient:
     """Thin wrapper over the `openai` SDK pointed at any compatible base URL."""
 
@@ -151,7 +171,15 @@ class OpenAICompatClient:
                               "max_tokens": self.cfg.max_tokens}
         if tools and self.cfg.tools_mode == "native":
             kw |= {"tools": tools, "tool_choice": "auto"}
-        msg = self._client.chat.completions.create(**kw).choices[0].message
+        from openai import BadRequestError
+
+        try:
+            msg = self._client.chat.completions.create(**kw).choices[0].message
+        except BadRequestError as e:
+            rejected = reply_from_rejected_call(getattr(e, "body", None), str(e))
+            if rejected is None:
+                raise
+            return rejected
         reply = LLMReply(content=msg.content or "")
         for tc in msg.tool_calls or []:
             raw = tc.function.arguments or "{}"

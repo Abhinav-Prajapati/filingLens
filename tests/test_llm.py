@@ -254,3 +254,41 @@ def test_compare_states_growth_so_the_answer_can_quote_it(ctx):
     margin = ask("TCS vs Infosys net margin", FakeLLM([native("compare", {
         "tickers": ["TCS", "INFY"], "metrics": ["net_margin"]})]), ctx).result
     assert any(n.startswith("change FY23-FY24: TCS +0.00 pp") for n in margin.notes)
+
+
+# ---- provider-side rejections (Groq answers HTTP 400 "tool call validation failed") ----------
+def _groq_400(generated):
+    return {"error": {"message": "tool call validation failed: parameters for tool get_value did "
+                                 "not match schema: errors: [missing properties: 'ticker']",
+                      "type": "invalid_request_error", "code": "tool_use_failed",
+                      "failed_generation": generated}}
+
+
+def test_rejected_call_is_recovered_and_normalised(ctx):
+    from filingLens.llm.client import reply_from_rejected_call
+    gen = '<tool_call>{"name": "get_value", "arguments": {"ticker": "Infosys", "metric": "revenue", "fy": "FY24"}}</tool_call>'
+    reply = reply_from_rejected_call(_groq_400(gen), "Error code: 400")
+    assert reply.error is None and reply.tool_calls[0].arguments["ticker"] == "Infosys"
+    r = ask("Infosys revenue FY24", FakeLLM([reply]), ctx)
+    assert r.ok and r.attempts == 1 and r.args["ticker"] == "INFY"     # fixed, no retry needed
+
+
+def test_rejected_call_gets_a_correction_round(ctx):
+    from filingLens.llm.client import reply_from_rejected_call
+    broken = reply_from_rejected_call(
+        _groq_400('{"name": "get_value", "arguments": {"metric": "revenue", "fy": "FY24"}}'), "")
+    unparseable = reply_from_rejected_call(_groq_400("get_value(revenue)"), "")
+    assert unparseable.tool_calls == [] and "provider rejected the tool call" in unparseable.error
+    assert "model wrote: get_value(revenue)" in unparseable.error
+    for first in (broken, unparseable):
+        llm = FakeLLM([first, native("get_value", {"ticker": "TCS", "metric": "revenue",
+                                                   "fy": "FY24"})])
+        r = ask("TCS revenue FY24", llm, ctx)
+        assert r.ok and r.attempts == 2
+        assert llm.requests[1][-1]["role"] == "user" and "Error:" in llm.requests[1][-1]["content"]
+
+
+def test_unrelated_bad_request_is_not_swallowed():
+    from filingLens.llm.client import reply_from_rejected_call
+    assert reply_from_rejected_call({"error": {"message": "model not found"}}, "404") is None
+    assert reply_from_rejected_call(None, "context length exceeded") is None

@@ -1,0 +1,291 @@
+# Evaluation set for `filinglens eval`. Expected values come from the ingested data
+# (TCS + INFY: FY23-FY26 with annual reports; HINDUNILVR: FY23-FY24; WIPRO: registered, no data).
+# Re-check them when the data changes.
+#
+# expect:
+#   tool:   name, or a list of acceptable tools
+#   args:   subset of the normalised arguments; or a list of such dicts (any may match).
+#           Scalars: equal, or one of a list. List arguments (tickers, metrics, fys): same set.
+#   values: numbers that must appear in the result table (rounded to the given decimals)
+#   pages:  the result must cite at least one of these pages (of `ticker`, when given)
+#   answer_contains: strings the written answer must contain (LLM only)
+#   refuse: true  -> must ask the user / say the company is not covered
+#   no_value: true -> must return no number (data missing) instead of inventing one
+# Questions are deliberately different from src/filingLens/llm/examples.yaml.
+
+# ---------- single values ---------------------------------------------------------------------
+- id: v01
+  q: What was TCS revenue in FY25?
+  tags: [value, en]
+  expect: {tool: get_value, args: {ticker: TCS, metric: revenue_from_operations, fy: FY25}, values: [255324]}
+- id: v02
+  q: Infosys net profit for 2025-26
+  tags: [value, en]
+  expect: {tool: get_value, args: {ticker: INFY, metric: net_profit, fy: FY26}, values: [29474]}
+- id: v03
+  q: HUL revenue in FY23
+  tags: [value, en]
+  expect: {tool: get_value, args: {ticker: HINDUNILVR, metric: revenue_from_operations, fy: FY23}, values: [60580]}
+- id: v04
+  q: What is the latest EPS of TCS?
+  tags: [value, en]
+  expect: {tool: get_value, args: {ticker: TCS, metric: eps_basic, fy: [latest, FY26]}, values: [136.01]}
+- id: v05
+  q: TCS total assets at the end of FY26
+  tags: [value, en, balance_sheet]
+  expect: {tool: get_value, args: {ticker: TCS, metric: total_assets, fy: FY26}, values: [182372]}
+- id: v06
+  q: How much tax did Infosys pay in FY26?
+  tags: [value, en]
+  expect: {tool: get_value, args: {ticker: INFY, metric: tax_expense, fy: FY26}, values: [10521]}
+- id: v07
+  q: Hindustan Unilever profit before tax FY24
+  tags: [value, en]
+  expect: {tool: get_value, args: {ticker: HINDUNILVR, metric: profit_before_tax, fy: FY24}, values: [13930]}
+- id: v08
+  q: TCS employee benefit expense in 2023-24
+  tags: [value, en]
+  expect: {tool: get_value, args: {ticker: TCS, metric: employee_expense, fy: FY24}, values: [140131]}
+- id: v09
+  q: Infosys ki kamai FY24 mein kitni thi?
+  tags: [value, hinglish]
+  expect: {tool: get_value, args: {ticker: INFY, metric: revenue_from_operations, fy: FY24}, values: [153670]}
+- id: v10
+  q: TCS ka nafa 2024-25 mein
+  tags: [value, hinglish]
+  expect: {tool: get_value, args: {ticker: TCS, metric: net_profit, fy: FY25}, values: [48797]}
+- id: v11
+  q: HUL ka EPS FY24
+  tags: [value, hinglish]
+  expect: {tool: get_value, args: {ticker: HINDUNILVR, metric: eps_basic, fy: FY24}, values: [43.74]}
+- id: v12
+  q: What were Infosys's total expenses in FY25?
+  tags: [value, en]
+  expect: {tool: get_value, args: {ticker: INFY, metric: total_expenses, fy: FY25}}
+
+# ---------- quarters --------------------------------------------------------------------------
+- id: q01
+  q: Infosys revenue in Q3 FY26
+  tags: [quarter, en]
+  expect: {tool: get_value, args: {ticker: INFY, metric: revenue_from_operations, fy: FY26, quarter: Q3}, values: [45479]}
+- id: q02
+  q: TCS revenue for the September 2026 quarter
+  tags: [quarter, en]
+  expect: {tool: get_value, args: {ticker: TCS, metric: revenue_from_operations, fy: FY27, quarter: Q2}, values: [73188]}
+- id: q03
+  q: TCS quarterly revenue trend
+  tags: [quarter, trend, en]
+  expect: {tool: get_trend, args: {ticker: TCS, metric: revenue_from_operations, period: Q}}
+
+# ---------- trends --------------------------------------------------------------------------------
+- id: t01
+  q: How has TCS revenue grown over the years?
+  tags: [trend, en]
+  expect: {tool: get_trend, args: {ticker: TCS, metric: revenue_from_operations}, values: [225458, 267021]}
+- id: t02
+  q: Infosys net profit over the last 3 years
+  tags: [trend, en]
+  expect:
+    tool: get_trend
+    args: [{ticker: INFY, metric: net_profit, last_n_years: 3}, {ticker: INFY, metric: net_profit, from_fy: FY24, to_fy: FY26}]
+    values: [26248, 29474]
+- id: t03
+  q: HUL profit trend
+  tags: [trend, en]
+  expect: {tool: get_trend, args: {ticker: HINDUNILVR, metric: net_profit}, values: [10143, 10282]}
+- id: t04
+  q: TCS ka revenue pichle 4 saal
+  tags: [trend, hinglish]
+  expect:
+    tool: get_trend
+    args: [{ticker: TCS, metric: revenue_from_operations, last_n_years: 4}, {ticker: TCS, metric: revenue_from_operations, from_fy: FY23, to_fy: FY26}]
+    values: [225458, 267021]
+- id: t05
+  q: Infosys ka munafa kaise badha hai?
+  tags: [trend, hinglish]
+  expect: {tool: get_trend, args: {ticker: INFY, metric: net_profit}}
+- id: t06
+  q: TCS total assets from FY24 to FY26
+  tags: [trend, en, balance_sheet]
+  expect: {tool: get_trend, args: {ticker: TCS, metric: total_assets, from_fy: FY24, to_fy: FY26}, values: [146449, 182372]}
+- id: t07
+  q: Show me TCS EPS history
+  tags: [trend, en]
+  expect: {tool: get_trend, args: {ticker: TCS, metric: eps_basic}, values: [115.19, 136.01]}
+
+# ---------- derived ratios ------------------------------------------------------------------------
+- id: d01
+  q: What is TCS's net profit margin in FY26?
+  tags: [derived, value, en]
+  expect: {tool: [get_value, get_trend], args: {ticker: TCS, metric: net_margin}, values: [18.52]}
+- id: d02
+  q: Infosys effective tax rate in FY25
+  tags: [derived, value, en]
+  expect: {tool: get_value, args: {ticker: INFY, metric: effective_tax_rate, fy: FY25}, values: [28.87]}
+- id: d03
+  q: How has TCS's employee cost as a share of revenue changed?
+  tags: [derived, trend, en]
+  expect: {tool: get_trend, args: {ticker: TCS, metric: employee_cost_ratio}, values: [56.56, 58.05]}
+- id: d04
+  q: Infosys PBT margin trend
+  tags: [derived, trend, en]
+  expect: {tool: get_trend, args: {ticker: INFY, metric: pbt_margin}, values: [22.7, 22.39]}
+- id: d05
+  q: HUL ka margin kitna hai?
+  tags: [derived, value, hinglish]
+  expect: {tool: [get_value, get_trend], args: {ticker: HINDUNILVR, metric: net_margin}, values: [16.61]}
+- id: d06
+  q: TCS tax rate history
+  tags: [derived, trend, en]
+  expect: {tool: get_trend, args: {ticker: TCS, metric: effective_tax_rate}, values: [25.66, 24.48]}
+
+# ---------- comparisons ---------------------------------------------------------------------------
+- id: c01
+  q: Compare TCS and Infosys revenue in FY26
+  tags: [compare, en]
+  expect: {tool: compare, args: {tickers: [TCS, INFY], metrics: [revenue_from_operations], fys: [FY26]}, values: [267021, 178650]}
+- id: c02
+  q: Who is more profitable, TCS or Infosys?
+  tags: [compare, derived, en]
+  expect: {tool: compare, args: {tickers: [TCS, INFY], metrics: [net_margin]}}
+- id: c03
+  q: Which company grew revenue faster between FY23 and FY26, Infosys or TCS?
+  tags: [compare, growth, en]
+  expect:
+    tool: compare
+    args: {tickers: [TCS, INFY], metrics: [revenue_from_operations]}
+    answer_contains: [Infosys]
+- id: c04
+  q: TCS vs Infosys employee cost ratio
+  tags: [compare, derived, en]
+  expect: {tool: compare, args: {tickers: [TCS, INFY], metrics: [employee_cost_ratio]}, values: [58.05, 53.23]}
+- id: c05
+  q: Infosys aur TCS ka EPS compare karo
+  tags: [compare, hinglish]
+  expect: {tool: compare, args: {tickers: [TCS, INFY], metrics: [eps_basic]}}
+- id: c06
+  q: HUL vs Infosys net profit FY24
+  tags: [compare, en]
+  expect: {tool: compare, args: {tickers: [HINDUNILVR, INFY], metrics: [net_profit], fys: [FY24]}, values: [10282, 26248]}
+- id: c07
+  q: Teeno companies mein kiska tax rate sabse kam hai?
+  tags: [compare, derived, hinglish]
+  expect: {tool: compare, args: {metrics: [effective_tax_rate]}}
+- id: c08
+  q: TCS revenue, net profit and tax expense in FY26
+  tags: [compare, metrics_axis, en]
+  expect:
+    tool: compare
+    args: {tickers: [TCS], metrics: [revenue_from_operations, net_profit, tax_expense]}
+    values: [267021, 49454, 16033]
+- id: c09
+  q: TCS vs Infosys profit before tax over the last two years
+  tags: [compare, en]
+  expect:
+    tool: compare
+    args: [{tickers: [TCS, INFY], metrics: [profit_before_tax], last_n_years: 2}, {tickers: [TCS, INFY], metrics: [profit_before_tax], fys: [FY25, FY26]}]
+    values: [65487, 39995]
+- id: c10
+  q: Kiska munafa zyada tezi se badha, TCS ya Infosys?
+  tags: [compare, growth, hinglish]
+  expect: {tool: compare, args: {tickers: [TCS, INFY], metrics: [net_profit]}}
+
+# ---------- text questions (annual reports) ----------------------------------------------------
+- id: s01
+  q: What is TCS's employee attrition rate?
+  tags: [text, en]
+  expect: {tool: search_reports, args: {tickers: [TCS]}, pages: [13, 43], ticker: TCS, answer_contains: ["13.3"]}
+- id: s02
+  q: How many patents has TCS been granted?
+  tags: [text, en]
+  expect: {tool: search_reports, args: {tickers: [TCS]}, pages: [14], ticker: TCS}
+- id: s03
+  q: What was TCS's total contract value for the year?
+  tags: [text, en]
+  expect: {tool: search_reports, args: {tickers: [TCS]}, pages: [7], ticker: TCS}
+- id: s04
+  q: How much did TCS spend on CSR?
+  tags: [text, en]
+  expect: {tool: search_reports, args: {tickers: [TCS]}, pages: [15, 39], ticker: TCS}
+- id: s05
+  q: What final dividend did TCS recommend?
+  tags: [text, en]
+  expect: {tool: search_reports, args: {tickers: [TCS]}, pages: [8, 35], ticker: TCS}
+- id: s06
+  q: What are the main business risks TCS sees?
+  tags: [text, en]
+  expect: {tool: search_reports, args: {tickers: [TCS]}, pages: [46, 47], ticker: TCS}
+- id: s07
+  q: What does Infosys say about agentic AI?
+  tags: [text, en]
+  expect: {tool: search_reports, args: {tickers: [INFY]}, ticker: INFY}
+- id: s08
+  q: Infosys ki AI strategy kya hai?
+  tags: [text, hinglish]
+  expect: {tool: search_reports, args: {tickers: [INFY]}, ticker: INFY}
+- id: s09
+  q: Who are the statutory auditors of Infosys?
+  tags: [text, en]
+  expect: {tool: search_reports, args: {tickers: [INFY]}, ticker: INFY}
+- id: s10
+  q: TCS ke employees kitne hain?
+  tags: [text, hinglish]
+  expect: {tool: search_reports, args: {tickers: [TCS]}, pages: [7, 13, 43, 48], ticker: TCS}
+
+# ---------- must refuse / ask back --------------------------------------------------------------
+- id: r01
+  q: What is Reliance Industries' revenue?
+  tags: [refuse, en]
+  expect: {refuse: true}
+- id: r02
+  q: HCL Tech vs TCS net profit
+  tags: [refuse, en]
+  expect: {refuse: true}
+- id: r03
+  q: revenue kitna tha?
+  tags: [refuse, hinglish]
+  expect: {refuse: true}
+- id: r04
+  q: How did the IT sector do last year?
+  tags: [refuse, en]
+  expect: {tool: [ask_user, search_reports]}
+- id: r05
+  q: Bajaj Finance ka profit
+  tags: [refuse, hinglish]
+  expect: {refuse: true}
+
+# ---------- data missing: must not invent a number --------------------------------------------
+- id: m01
+  q: TCS revenue in FY19
+  tags: [missing, en]
+  expect: {tool: get_value, args: {ticker: TCS, fy: FY19}, no_value: true}
+- id: m02
+  q: HUL revenue in FY26
+  tags: [missing, en]
+  expect: {tool: get_value, args: {ticker: HINDUNILVR, fy: FY26}, no_value: true}
+- id: m03
+  q: Wipro net profit FY25
+  tags: [missing, en]
+  expect: {tool: [get_value, ask_user], args: {ticker: WIPRO}, no_value: true}
+- id: m04
+  q: TCS standalone revenue FY24
+  tags: [missing, en]
+  expect: {tool: get_value, args: {ticker: TCS, scope: standalone}, no_value: true}
+- id: m05
+  q: Infosys revenue in Q2 FY27
+  tags: [missing, quarter, en]
+  expect: {tool: get_value, args: {ticker: INFY, fy: FY27, quarter: Q2}, no_value: true}
+
+# ---------- tricky wording ------------------------------------------------------------------------
+- id: x01
+  q: How much money did TCS make from operations last year?
+  tags: [tricky, en]
+  expect: {tool: get_value, args: {ticker: TCS, metric: revenue_from_operations}}
+- id: x02
+  q: Is Infosys's bottom line growing?
+  tags: [tricky, en]
+  expect: {tool: get_trend, args: {ticker: INFY, metric: net_profit}}
+- id: x03
+  q: TCS staff costs vs Infosys staff costs
+  tags: [tricky, compare, en]
+  expect: {tool: compare, args: {tickers: [TCS, INFY], metrics: [employee_expense]}}

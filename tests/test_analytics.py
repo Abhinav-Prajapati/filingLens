@@ -158,3 +158,11 @@ def test_cli_trend_and_compare(tmp_path, capsys):
     assert main(["compare", "revenue_from_operations", "eps_basic", "--ticker", "TCS",
                  "--db", str(db)]) in (0, 2)       # eps has no data here: compared or refused
     assert main(["trend", "TCS", "made_up", "--db", str(db)]) == 2
+
+
+def test_fy_balance_sheet_uses_year_end_only():
+    facts = [make_fact(metric="total_assets", fy=fy, value=v, ptype="INSTANT", start="", end=end)
+             for fy, v, end in [("FY26", 175219, "2025-12-31"), ("FY26", 182372, "2026-03-31"),
+                                ("FY27", 190782, "2026-09-30"), ("FY25", 159629, "2025-03-31")]]
+    got, _ = load_series(lambda t, m, s, p: facts, REG, "TCS", "total_assets")
+    assert [(f.fy, f.value) for f in got] == [("FY26", 182372), ("FY25", 159629)]
