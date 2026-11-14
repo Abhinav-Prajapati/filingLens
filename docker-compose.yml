@@ -1,0 +1,84 @@
+# filingLens stack. Secrets come from .env (see .env.example).
+#
+#   docker compose up -d                 everything: Postgres, S3 store, S3 browser, the app
+#   docker compose up -d postgres seaweedfs s3manager      infrastructure only (run the app
+#                                                          on the host with `filinglens serve`)
+#
+# Every port is published on 127.0.0.1 only. The app uses the host network so it can reach a
+# local llama-server (FILINGLENS_LLM_BASE_URL=http://localhost:...) exactly as on the host.
+
+name: filinglens
+
+services:
+  postgres:
+    image: postgres:18.7
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: filinglens
+      POSTGRES_DB: filinglens
+      POSTGRES_PASSWORD: ${FILINGLENS_PG_PASSWORD:?set FILINGLENS_PG_PASSWORD in .env}
+    ports: ["127.0.0.1:5442:5432"]
+    volumes: [pgdata:/var/lib/postgresql]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U filinglens -d filinglens"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # S3-compatible object store for downloaded filings (XBRL and annual-report PDFs)
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.53
+    restart: unless-stopped
+    environment:
+      S3_ACCESS_KEY: ${FILINGLENS_S3_ACCESS_KEY:?set FILINGLENS_S3_ACCESS_KEY in .env}
+      S3_SECRET_KEY: ${FILINGLENS_S3_SECRET_KEY:?set FILINGLENS_S3_SECRET_KEY in .env}
+    # one identity with full rights, written from the environment at start
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        printf '{"identities":[{"name":"filinglens","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}'
+        "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" > /tmp/s3.json &&
+        exec weed server -dir=/data -master.volumeSizeLimitMB=1024 -s3 -s3.port=8333 -s3.config=/tmp/s3.json
+    ports: ["127.0.0.1:8333:8333"]
+    volumes: [s3data:/data]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # light web UI to browse, download and upload bucket files: http://127.0.0.1:8090
+  s3manager:
+    image: cloudlena/s3manager:v0.12.0
+    restart: unless-stopped
+    environment:
+      ENDPOINT: seaweedfs:8333
+      ACCESS_KEY_ID: ${FILINGLENS_S3_ACCESS_KEY}
+      SECRET_ACCESS_KEY: ${FILINGLENS_S3_SECRET_KEY}
+      USE_SSL: "false"
+      ALLOW_DELETE: "true"
+    ports: ["127.0.0.1:8090:8080"]
+    depends_on:
+      seaweedfs: {condition: service_healthy}
+
+  # the API and web UI on http://127.0.0.1:8765 (stop a host `filinglens serve` first)
+  app:
+    build: .
+    image: filinglens-app
+    restart: unless-stopped
+    network_mode: host
+    env_file: [.env]
+    volumes:
+      - ./work:/app/work                              # equity list, company overlay, vectors
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface   # BGE-M3 model, not re-downloaded
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    depends_on:
+      postgres: {condition: service_healthy}
+      seaweedfs: {condition: service_healthy}
+
+volumes:
+  pgdata:
+  s3data:
