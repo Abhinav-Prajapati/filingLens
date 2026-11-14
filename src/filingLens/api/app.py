@@ -3,6 +3,7 @@
     POST /ask                      question -> AnswerView (written answer + data view)
     GET  /value   /trend  /compare  /search    direct data, no LLM: DataView (table, chart...)
     GET  /companies  /metrics  /health
+    GET  /                         the web UI (web/dist), when it has been built
 
 Every response is a Pydantic model (see filingLens.views); /docs has an interactive page and
 /openapi.json the schema a frontend can generate types from. One SQLite connection is shared
@@ -19,6 +20,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from filingLens.analytics.derived import DERIVED
@@ -33,6 +35,8 @@ from filingLens.storage.db import connect
 from filingLens.views import AnswerView, DataView, answer_view, data_view, metric_label
 
 Scope = Literal["consolidated", "standalone"]
+# the built web UI (cd web && npm run build); served at / when present
+WEB_DIST = Path(os.environ.get("FILINGLENS_WEB", Path(__file__).resolve().parents[3] / "web" / "dist"))
 DEFAULT_ORIGINS = "http://localhost:3000,http://localhost:5173"
 
 
@@ -77,7 +81,8 @@ def _llm_from_env() -> LLMClient | None:
 def create_app(db: str | Path = "work/filingLens.db", vectors: str | Path | None = None,
                llm: LLMClient | None | Literal["env"] = "env", warm: bool = False,
                registry: Registry | None = None,
-               equity_list: str | Path = DEFAULT_LIST_PATH) -> FastAPI:
+               equity_list: str | Path = DEFAULT_LIST_PATH,
+               web_dir: str | Path | None = WEB_DIST) -> FastAPI:
     """``llm="env"`` reads the LLM settings from the environment / .env; ``warm`` loads the
     embedding model at startup instead of on the first text question."""
     db = Path(db)
@@ -178,6 +183,9 @@ def create_app(db: str | Path = "work/filingLens.db", vectors: str | Path | None
         return Health(status="ok", facts=facts, companies_with_data=cos, chunks=chunks,
                       vector_index=vectors.exists(), llm=llm_label)
 
+    # the web UI last, so every API route above takes precedence over its files
+    if web_dir and (Path(web_dir) / "index.html").exists():
+        app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")
     return app
 
 

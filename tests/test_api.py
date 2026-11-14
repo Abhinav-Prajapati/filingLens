@@ -24,7 +24,7 @@ def client(tmp_path):
         + [make_fact(ticker="INFY", fy="FY24", value=153670.0)])
     con.close()
     with TestClient(create_app(db, llm=None, registry=load_registry(),
-                               equity_list=tmp_path / "none.csv")) as c:
+                               equity_list=tmp_path / "none.csv", web_dir=None)) as c:
         yield c
 
 
@@ -89,3 +89,16 @@ def test_source_summary_groups_pages_by_report():
              {"ticker": "INFY", "page": 24, "report": None}]
     assert source_summary(cites) == ("TCS Annual Report FY25 p.12, p.91; INFY annual report "
                                      "p.24; TCS FY26 results (XBRL)")
+
+
+def test_serves_built_web_ui_without_shadowing_the_api(tmp_path):
+    web = tmp_path / "dist"
+    web.mkdir()
+    (web / "index.html").write_text("<!doctype html><title>filingLens</title>")
+    connect(tmp_path / "f.db").close()
+    app = create_app(tmp_path / "f.db", llm=None, registry=load_registry(),
+                     equity_list=tmp_path / "none.csv", web_dir=web)
+    with TestClient(app) as c:
+        assert "filingLens" in c.get("/").text
+        assert c.get("/health").json()["status"] == "ok"
+        assert c.get("/metrics").status_code == 200

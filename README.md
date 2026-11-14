@@ -150,6 +150,35 @@ series of `(period, value)` points per line, `null` = gap), `stats` (value, chan
 Generate frontend types from `/openapi.json`. `filinglens ask --json` prints the same view.
 Allowed browser origins: `FILINGLENS_CORS` (default localhost:3000 and :5173).
 
+## Web UI
+
+```bash
+cd web && npm install
+npm run dev                      # http://localhost:5173 (proxies the API on :8765 under /api)
+npm run build                    # web/dist; `filinglens serve` then serves the UI at http://127.0.0.1:8765/
+```
+
+React + Ant Design 6 + ECharts (`web/`), dark theme by default. **Ask** is a research thread: each answer is a card with the written
+summary, headline tiles (total change, CAGR), a chart, the sortable table and every source with
+its page. The chart type follows the shape of the data, and a switcher offers every form that fits:
+
+| answer | views |
+|---|---|
+| one figure | large value, its history (sparkline), rank among covered peers |
+| trend | line, bars, YoY change bars, bridge (waterfall of yearly changes) |
+| quarterly trend | line with gaps where no figure was filed |
+| comparison over years | grouped bars, line, indexed (first year = 100), slope, growth heatmap |
+| comparison in one year | ranked bars, share donut |
+| text question | report passages with page, section, query words highlighted |
+
+**Explore** is a dashboard over all loaded companies: revenue/profit/margin cards, indexed growth,
+ratio radar, revenue-to-net-profit bridge, share of the group, ratios over time and a YoY growth
+heatmap. Companies keep one colour everywhere; dark, light or system theme (toggle in the header);
+missing values stay blank. Link parameters: `?q=<question>` asks on load, `?theme=dark|light|system`.
+
+`.mcp.json` registers an Ant Design docs MCP server (`@jzone-mcp/antd-components-mcp`, community)
+so Claude Code can look up antd 6 component APIs when editing the UI.
+
 ## Dev
     pip install -e ".[dev]"
     pytest
