@@ -70,13 +70,15 @@ export function AskPage() {
   const askWith = async (question: string, llm: boolean) => {
     const text = question.trim()
     if (text.length < 2) return
+    const last = [...turns].reverse().find((t) => t.answer)?.answer
+    const previous = last ? { question: last.question, tool: last.tool } : undefined
     const id = Math.random().toString(36).slice(2)
     setTurns((ts) => [...ts, { id, question: text, useLlm: llm }])
     setQ('')
     requestAnimationFrame(() => end.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }))
     abort.current = new AbortController()
     try {
-      const answer = await api.ask(text, llm, abort.current.signal)
+      const answer = await api.ask(text, llm, abort.current.signal, previous)
       setTurns((ts) => ts.map((t) => (t.id === id ? { ...t, answer } : t)))
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : e instanceof Error && e.name === 'AbortError' ? 'Stopped.' : String(e)

@@ -135,6 +135,12 @@ def find_years(text: str) -> dict:
     for m in re.finditer(r"\bfy\s?'?(\d{4}|\d{2})\b|\b(20\d{2})\s?[-/]\s?(\d{4}|\d{2})\b", text):
         yy = (m.group(1) or m.group(3))[-2:]
         fys.append(f"FY{int(yy):02d}")
+        # "fy 23 to 24", "FY23-24", "fy23 se 24 tak": the bare second year is an FY too
+        if m.group(1):
+            end = re.match(r"\s*(?:to|till|until|-|–|se|and|vs)\s*(?:fy\s?'?)?(\d{2}|20\d{2})\b",
+                           text[m.end():])
+            if end:
+                fys.append(f"FY{int(end.group(1)[-2:]):02d}")
     if fys:
         out["fys"] = list(dict.fromkeys(fys))
     num = r"(\d{1,2}|" + "|".join(NUMBER_WORDS) + r")"

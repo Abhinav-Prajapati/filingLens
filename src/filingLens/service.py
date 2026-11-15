@@ -1,7 +1,11 @@
 """The answer service: one function from question to complete response, used by the CLI, the
 API and the eval, so all behave identically.
 
+    short follow-up / answer to a clarifying question -> read with the previous question
+    close misspelling of a covered company ("wifpro")  -> read as that company, and say so
     question names a listed company that is not loaded -> say so (no partial answer)
+    "why" question with a company and a metric  -> the figures + the reasons from that year's
+                                                   annual report (management discussion first)
     LLM configured and working  -> LLM picks the tool -> run -> LLM writes a checked answer
     no LLM / LLM fails / no valid call -> rule-based plan -> run (table, no written answer)
     rules find no metric        -> search the reports -> passages with page sources
@@ -27,19 +31,24 @@ from filingLens.companies import (
     load_equity_list,
 )
 from filingLens.domain.registry import Registry
+from filingLens.domain.units import fmt_value
 from filingLens.llm.answer import Answer, compose_answer
 from filingLens.llm.client import LLMClient
-from filingLens.llm.executor import Context, ToolResult, execute
-from filingLens.llm.planner import ask
+from filingLens.llm.executor import Context, ToolResult, execute, search_passages
+from filingLens.llm.planner import ask, loaded_names
+from filingLens.llm.prompt import join_names, short_name
 from filingLens.llm.tools import validate_call
 from filingLens.nlu import rules
+from filingLens.nlu.followup import Previous, combine
+from filingLens.nlu.spelling import correct_companies
+from filingLens.retrieval.search import STOPWORDS
 from filingLens.storage.db import Database
 
 
 @dataclass
 class Response:
     question: str
-    mode: str                                   # "llm" | "rules" | "search"
+    mode: str                                   # "llm" | "rules" | "search" | "explain"
     tool: str | None = None
     args: dict[str, Any] | None = None
     result: ToolResult | None = None
@@ -48,6 +57,7 @@ class Response:
     errors: list[str] = field(default_factory=list)     # model/tool errors along the way
     attempts: int = 0
     seconds: float = 0.0
+    support: ToolResult | None = None           # "why" questions: the figures behind the text
 
     @property
     def ok(self) -> bool:
@@ -88,9 +98,86 @@ def make_guard(registry: Registry, path: Path = DEFAULT_LIST_PATH) -> CompanyGua
 
 
 DATA_TOOLS = ("get_value", "get_trend", "compare")
+# where annual reports explain results: management discussion, directors' report, the letters
+NARRATIVE = ["mdna", "directors_report", "front_matter"]
+FELL = "decline decrease decreased lower fell drop reduced pressure"
+ROSE = "growth increase increased higher rose improved driven"
 # text questions the rules may still find a metric in ("why did revenue fall")
 EXPLAIN = re.compile(r"\b(why|reason|reasons|explain|kyun|kyon|driver|drivers|drove|"
                            r"strategy|outlook|guidance|risk|risks|commentary|plan|plans)\b")
+
+
+def figures_sentence(figures: ToolResult, metrics: list[str], reg: Registry) -> str:
+    """A plain summary written by code from the verified figures (no model): first and last
+    value of each series and the change. Used when no checked explanation is available."""
+    from filingLens.views import metric_label
+
+    label = " and ".join(metric_label(m, reg).split(" (")[0] for m in metrics)
+    pct = figures.unit == "%"
+    parts = []
+    for st in figures.stats or []:
+        if st.get("kind") not in ("change", "change_pp") or st.get("value") is None:
+            continue
+        series = str(st.get("series") or "")
+        first = next((r for r in figures.rows if r.get("period") == st.get("from")), None)
+        last = next((r for r in figures.rows if r.get("period") == st.get("to")), None)
+        col = series if first is not None and series in first else "value"
+        v0, v1 = (first or {}).get(col), (last or {}).get(col)
+        if not isinstance(v0, (int, float)) or not isinstance(v1, (int, float)):
+            continue
+        who = short_company(reg.companies[series].name) if series in reg.companies else ""
+        what = (f"{who}'s {label[0].lower()}{label[1:]}" if who else label)
+        show = (lambda v: f"{v:.2f}%") if pct else (lambda v: f"₹{fmt_value(v, 'INR crore')} crore")
+        ch = st["value"]
+        change = f"{ch:+.2f} pp" if st["kind"] == "change_pp" else f"{ch:+.1f}%"
+        parts.append(f"{what} went from {show(v0)} in {st['from']} to {show(v1)} in "
+                     f"{st['to']} ({change.replace('-', '−')}).")
+    lead = " ".join(parts) or "The figures are below."
+    return f"{lead} The reasons the annual report gives are in the passages below."
+
+
+def short_company(name: str) -> str:
+    return re.sub(r"\s+(limited|ltd\.?)$", "", name, flags=re.IGNORECASE).strip()
+
+
+GENERIC = {"from", "operations", "total", "other", "basic", "diluted", "for", "the", "per"}
+
+
+def metric_words(metrics: list[str], reg: Registry) -> list[str]:
+    """Words a passage must mention to be about the metric: "Net profit margin" -> profit,
+    margin (ratios add their parts: net margin -> profit, revenue)."""
+    from filingLens.analytics.derived import DERIVED
+
+    words: list[str] = []
+    for m in metrics:
+        if m in DERIVED:
+            d = DERIVED[m]
+            parts = [d.desc, *(reg.metrics[x].desc for x in (d.numerator, d.denominator)
+                               if x in reg.metrics)]
+        else:
+            parts = [reg.metrics[m].desc if m in reg.metrics else m.replace("_", " ")]
+        for label in parts:
+            words += [w for w in re.findall(r"[a-z]+", label.lower().split("(")[0])
+                      if len(w) > 3 and w not in GENERIC]
+    return list(dict.fromkeys(words))
+
+
+def explain_query(question: str, metrics: list[str], change: float | None,
+                  reg: Registry) -> str:
+    """Search words for a "why" question: its own content words, the metric's name, and words
+    reports use for the direction of the change."""
+    drop = set(STOPWORDS) | {"why", "reason", "reasons", "explain", "kyun", "kyon", "fy",
+                             "from", "between", "during", "was", "were", "the"}
+    for t, c in reg.companies.items():
+        for a in (t.lower(), c.name.lower(), *c.aliases):
+            drop.update(a.split())
+    words = [w for w in re.findall(r"[a-z]+", question.lower()) if w not in drop and len(w) > 2]
+    for m in metrics:
+        label = reg.metrics[m].desc if m in reg.metrics else m.replace("_", " ")
+        words += re.findall(r"[a-z]+", label.lower().split("(")[0])
+    if change is not None:
+        words += (FELL if change < 0 else ROSE).split()
+    return " ".join(dict.fromkeys(words)) or question
 
 
 def not_loaded_message(missing: list[ListedCompany], reg: Registry) -> str:
@@ -109,16 +196,31 @@ class AnswerService:
         self.ctx, self.llm, self.write_answer = ctx, llm, write_answer
         self.no_llm_reason, self.guard = no_llm_reason, guard
 
-    def answer(self, question: str) -> Response:
+    def answer(self, question: str, previous: Previous | None = None) -> Response:
         t0 = time.monotonic()
+        reg = self.ctx.registry
+        read: list[str] = []                          # how the question was read
+        question, follow = combine(previous, question, reg)
+        if follow:
+            read.append(follow)
+        question, fixes = correct_companies(question, reg, rules.question_words(reg))
+        read += [f"read “{f.typed}” as “{f.read_as}”" for f in fixes]
+        r = self._answer(question)
+        r.notes[:0] = read
+        r.seconds = round(time.monotonic() - t0, 2)
+        return r
+
+    def _answer(self, question: str) -> Response:
         missing = self.guard.find(question) if self.guard else []
         if missing:
             r = Response(question, "rules", "ask_user", {}, notes=[
                 "the question names a company that is not loaded"])
             r.result = ToolResult("ask_user", "company not loaded",
                                   clarify=not_loaded_message(missing, self.ctx.registry))
-            r.seconds = round(time.monotonic() - t0, 2)
             return r
+        explain = self._explain(question)
+        if explain is not None:
+            return explain
         via_llm = self._via_llm(question) if self.llm is not None else None
         if via_llm is None:
             r = self._via_rules(question)
@@ -126,7 +228,57 @@ class AnswerService:
                 r.notes.insert(0, f"answered without the LLM ({self.no_llm_reason})")
         else:
             r = via_llm
-        r.seconds = round(time.monotonic() - t0, 2)
+        return r
+
+    # ---- "why" questions ----------------------------------------------------------------------
+    def _explain(self, question: str) -> Response | None:
+        """"Why did Wipro's net profit fall from FY23 to FY24": the figures (rules plan) and
+        the reasons from the annual report of the last year asked about, management
+        discussion and directors' report first. None when it is not such a question."""
+        norm = rules._norm(question)
+        if not EXPLAIN.search(norm):
+            return None
+        reg = self.ctx.registry
+        p = rules.plan(question, reg)
+        if p is None or p.tool not in DATA_TOOLS:
+            return None
+        try:
+            args = validate_call(p.tool, p.args, reg)
+        except ValueError:
+            return None
+        r = Response(question, "explain", "search_reports", notes=[
+            "a “why” question: the figures from the filings, and what the annual report says"])
+        figures = self._run(p.tool, args, r)
+        a = args.model_dump()
+        tickers = a.get("tickers") or [a["ticker"]]
+        metrics = a.get("metrics") or [a["metric"]]
+        years = rules.find_years(norm).get("fys") or []
+        report_fy = max(years, key=lambda f: int(f[2:])) if years else None
+        if report_fy is None and figures.rows:
+            report_fy = str(figures.rows[-1].get("period", ""))[:4] or None
+        change = next((st["value"] for st in figures.stats
+                       if st.get("kind") in ("change", "change_pp") and st.get("value") is not None),
+                      None) if figures.stats else None
+        query = explain_query(question, metrics, change, reg)
+        fy = [report_fy] if report_fy and report_fy.startswith("FY") else []
+        res = search_passages(self.ctx, query, tickers, fy, NARRATIVE, k=5,
+                              tiers=[(fy, NARRATIVE), (fy, []), ([], NARRATIVE)],
+                              must=metric_words(metrics, reg))
+        if fy:
+            res.notes.insert(0, f"searched the {report_fy} annual report"
+                             + (f"{'s' if len(tickers) > 1 else ''} of {', '.join(tickers)}")
+                             + ": management discussion and directors' report first")
+        r.args = {"query": query, "tickers": tickers, "fy": fy[0] if fy else None,
+                  "section": None, "k": 5, "figures": {"tool": p.tool, **a}}
+        r.result, r.support = res, (figures if figures.rows else None)
+        if self.llm is not None and self.write_answer and res.rows:
+            r.answer = compose_answer(question, res, self.llm, figures=r.support)
+        if r.answer.text is None and r.support is not None:
+            if r.answer.rejected:                    # say why, then use the checked figures
+                r.notes.append(f"the model's explanation was not used ({r.answer.rejected})")
+            elif self.llm is None:
+                r.notes.append(f"answered without the LLM ({self.no_llm_reason})")
+            r.answer = Answer(figures_sentence(r.support, metrics, reg))
         return r
 
     # ---- LLM path -------------------------------------------------------------------------
@@ -187,6 +339,9 @@ class AnswerService:
         p = rules.plan(question, reg)
         if p is None:
             return self._search(question)
+        if p.tool == "ask_user":                     # name the companies that have data
+            names = join_names([short_name(n) for n in loaded_names(self.ctx)], "and")
+            p.args["question"] = f"Which company? I have data for {names}."
         try:
             args = validate_call(p.tool, p.args, reg)
         except ValueError as e:

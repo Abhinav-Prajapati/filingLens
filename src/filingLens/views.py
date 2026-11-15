@@ -110,14 +110,15 @@ class DataView(BaseModel):
 
 
 class AnswerView(BaseModel):
-    question: str
+    question: str                              # as answered (follow-ups and spellings applied)
     ok: bool
-    mode: Literal["llm", "rules", "search"]    # what understood the question
+    mode: Literal["llm", "rules", "search", "explain"]   # what understood the question
     tool: str | None = None
     args: dict[str, Any] | None = None
     answer: str | None = None                  # written answer (checked); null = show data
     answer_rejected: str | None = None         # why a model-written answer was not used
     data: DataView | None = None
+    figures: DataView | None = None            # "why" questions: the figures behind the text
     notes: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     seconds: float = 0.0
@@ -282,4 +283,13 @@ def answer_view(r: Any, reg: Registry) -> AnswerView:
                       mode=r.mode, tool=r.tool, args=r.args, answer=r.answer.text,
                       answer_rejected=r.answer.rejected,
                       data=data_view(r.result, r.args, reg) if r.result else None,
+                      figures=_figures(r, reg),
                       notes=list(r.notes), errors=list(r.errors), seconds=r.seconds)
+
+
+def _figures(r: Any, reg: Registry) -> DataView | None:
+    support = getattr(r, "support", None)
+    if support is None:
+        return None
+    args = {k: v for k, v in ((r.args or {}).get("figures") or {}).items() if k != "tool"}
+    return data_view(support, args, reg)

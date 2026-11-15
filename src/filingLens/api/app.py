@@ -37,6 +37,7 @@ from filingLens.domain.registry import Registry
 from filingLens.llm.client import LLMClient, LLMConfig, make_client
 from filingLens.llm.executor import execute
 from filingLens.llm.tools import validate_call
+from filingLens.nlu.followup import Previous
 from filingLens.service import AnswerService, make_context, make_guard
 from filingLens.storage.db import Database, connect
 from filingLens.storage.objects import ObjectStore
@@ -48,10 +49,16 @@ WEB_DIST = Path(os.environ.get("FILINGLENS_WEB", Path(__file__).resolve().parent
 DEFAULT_ORIGINS = "http://localhost:3000,http://localhost:5173"
 
 
+class PreviousTurn(BaseModel):
+    question: str                        # the previous answer's ``question`` (as answered)
+    tool: str | None = None              # its ``tool``: "ask_user" when it asked back
+
+
 class AskRequest(BaseModel):
-    question: str = Field(min_length=2, examples=["TCS vs Infosys revenue growth FY23-FY26"])
+    question: str = Field(min_length=1, examples=["TCS vs Infosys revenue growth FY23-FY26"])
     use_llm: bool = True                 # false: rule-based understanding only (fast, free)
     write_answer: bool = True            # false: data only, no written summary
+    previous: PreviousTurn | None = None  # the turn before: short follow-ups are read with it
 
 
 class CompanyInfo(BaseModel):
@@ -163,7 +170,8 @@ def create_app(database_url: str | None = None, vectors: str | Path | None = Non
         svc = AnswerService(st.ctx, client if req.use_llm else None, req.write_answer, reason,
                             st.guard)
         with lock:
-            r = svc.answer(req.question)
+            prev = Previous(req.previous.question, req.previous.tool) if req.previous else None
+            r = svc.answer(req.question, prev)
         return answer_view(r, st.reg)
 
     @app.get("/value", response_model=DataView, dependencies=signed_in)

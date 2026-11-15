@@ -3,6 +3,7 @@ aliases, metrics, synonyms) and llm/examples.yaml, so it never lists something t
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -34,9 +35,49 @@ def _call(tool: str, args: dict) -> str:
     return json.dumps({"name": tool, "arguments": args}, ensure_ascii=False)
 
 
+# well-known listed companies used in the "not covered" examples: the first ones the registry
+# does not cover are picked, so an example never claims a loaded company is missing
+UNCOVERED_CANDIDATES = ("Reliance", "HCL Tech", "Maruti", "ITC", "Bajaj Finance", "Titan",
+                        "Asian Paints", "Larsen & Toubro", "Sun Pharma", "Wipro", "Infosys")
+
+
+def join_names(names: list[str], last: str = "or") -> str:
+    """["A"] -> "A"; ["A", "B", "C"] -> "A, B or C"."""
+    if len(names) <= 1:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} {last} {names[-1]}"
+
+
+def uncovered(reg: Registry, n: int = 2) -> list[str]:
+    known = {a for t, c in reg.companies.items() for a in (t.lower(), c.name.lower(), *c.aliases)}
+    out = [c for c in UNCOVERED_CANDIDATES
+           if not any(w in known for w in (c.lower(), c.lower().split()[0]))]
+    return (out + ["Acme Industries", "Example Corp"])[:n]
+
+
+def short_name(name: str) -> str:
+    """"Wipro Limited" -> "Wipro"; "Tata Consultancy Services" stays."""
+    return re.sub(r"\s+(limited|ltd\.?)$", "", name, flags=re.IGNORECASE).strip()
+
+
+def fill_examples(examples: list[dict], loaded: list[str], reg: Registry) -> list[dict]:
+    """Replace {loaded}, {loaded_and}, {uncovered1}, {uncovered2} in the examples."""
+    u1, u2 = uncovered(reg)
+    short = [short_name(n) for n in loaded]
+    either, both = join_names(short) or "none yet", join_names(short, "and") or "none yet"
+    sub = lambda v: (v.replace("{loaded_and}", both).replace("{loaded}", either)
+                     .replace("{uncovered1}", u1).replace("{uncovered2}", u2)
+                     ) if isinstance(v, str) else v
+    return [{**e, "q": sub(e["q"]), "args": {k: sub(v) for k, v in e["args"].items()}}
+            for e in examples]
+
+
 def build_system_prompt(reg: Registry, latest_fy: str | None,
-                        examples: list[dict] | None = None) -> str:
-    examples = load_examples() if examples is None else examples
+                        examples: list[dict] | None = None,
+                        loaded: list[str] | None = None) -> str:
+    """``loaded``: names of the companies that have data (default: every registered one)."""
+    loaded = loaded if loaded is not None else [c.name for c in reg.companies.values()]
+    examples = fill_examples(load_examples() if examples is None else examples, loaded, reg)
     companies = "\n".join(f"- {t}: {c.name} (also: {', '.join(c.aliases)})"
                           for t, c in reg.companies.items())
     metrics = "\n".join(f"- {mid}: {m.desc} (also: {', '.join(m.synonyms[:6])})"
@@ -75,8 +116,9 @@ RULES:
    "sales", "turnover" and "income from operations" mean revenue_from_operations; "margin"
    alone means net_margin.
 3. Scope is consolidated unless the question says standalone.
-4. If the company is missing, or not in the list (e.g. Wipro, Reliance, HCL), call ask_user.
-   Never substitute a listed company for one the user did not name.
+4. If the company is missing, or not in the list (e.g. {', '.join(uncovered(reg))}), call
+   ask_user. Never substitute a listed company for one the user did not name. Companies
+   with data: {join_names([short_name(n) for n in loaded], 'and') or 'none yet'}.
 5. "growth", "grew", "badha", "faster" when comparing companies: compare with
    normalise "index100" and no fys (growth needs several years).
 6. search_reports query: a short English phrase with the key terms, even for Hinglish questions.

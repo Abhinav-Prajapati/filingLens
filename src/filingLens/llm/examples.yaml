@@ -1,5 +1,9 @@
 # Worked examples shown to the LLM (few-shot). Each one must pass tools.validate_call;
 # tests/test_llm.py checks that. Add a line here when the model gets a kind of question wrong.
+# Placeholders filled from the data when the prompt is built (llm/prompt.py), so the examples
+# never go stale when companies are added:
+#   {loaded}       the companies with data, e.g. "TCS, Infosys or Wipro" ({loaded_and}: "... and ...")
+#   {uncovered1}   a well-known listed company that is NOT covered (and {uncovered2})
 - q: TCS revenue FY24
   tool: get_value
   args: {ticker: TCS, metric: revenue_from_operations, fy: FY24}
@@ -41,13 +45,13 @@
   args: {query: key business risks and mitigation, tickers: [TCS], section: mdna}
 - q: profit kitna hua?
   tool: ask_user
-  args: {question: "Which company: TCS, Infosys or Hindustan Unilever?"}
-- q: Reliance revenue FY24
+  args: {question: "Which company: {loaded}?"}
+- q: "{uncovered1} revenue FY24"
   tool: ask_user
-  args: {question: "I only have data for TCS, Infosys and Hindustan Unilever. Which of these would you like?"}
+  args: {question: "I only have data for {loaded_and}. Which of these would you like?"}
 - q: Which grew revenue faster, TCS or Infosys?
   tool: compare
   args: {tickers: [TCS, INFY], metrics: [revenue_from_operations], normalise: index100}
-- q: Wipro ka profit FY24
+- q: "{uncovered2} ka profit FY24"
   tool: ask_user
-  args: {question: "I only have data for TCS, Infosys and Hindustan Unilever. Which of these would you like?"}
+  args: {question: "I only have data for {loaded_and}. Which of these would you like?"}

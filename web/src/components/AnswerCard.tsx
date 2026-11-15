@@ -1,6 +1,6 @@
 import { Alert, Card, Tag, Tooltip } from 'antd'
 import {
-  ClockCircleOutlined, RobotOutlined, SafetyCertificateOutlined, SearchOutlined, SettingOutlined,
+  BulbOutlined, ClockCircleOutlined, EditOutlined, RobotOutlined, SafetyCertificateOutlined, SearchOutlined, SettingOutlined,
 } from '@ant-design/icons'
 import type { AnswerView } from '../lib/api'
 import { useMeta } from '../lib/meta'
@@ -20,19 +20,30 @@ const KIND: Record<string, string> = {
   get_value: 'Figure', get_trend: 'Trend', compare: 'Comparison', search_reports: 'From the annual reports', ask_user: 'Needs a closer look',
 }
 
+const READ_AS = /^read /                 // notes on how the question was read: shown under the title
+
 type A = Record<string, unknown>
 
 export function AnswerCard({ a }: { a: AnswerView }) {
   const { metricLabel, companyName } = useMeta()
   const d = a.data
   const args = (a.args ?? {}) as A
+  const explain = a.mode === 'explain'
+  const fargs = (args.figures ?? {}) as A                 // "why": the figures' request
   const metric = (args.metric as string) ?? ((args.metrics as string[]) ?? [])[0]
+    ?? (fargs.metric as string) ?? ((fargs.metrics as string[]) ?? [])[0]
+  const readAs = a.notes.filter((n) => READ_AS.test(n))
   const goodWhenUp = !LOWER_IS_BETTER.has(metric ?? '')
   const periods = d?.table?.rows.map((r) => String(r.period)) ?? []
   const verified = d?.sources.filter((s) => s.verified === 'pdf').length ?? 0
 
   let title = d?.title ?? a.question
-  if (a.tool === 'get_value' && args.ticker) title = `${companyName(args.ticker as string)} · ${metricLabel(metric)}`
+  if (explain) {
+    const tk = (args.tickers as string[]) ?? []
+    const names = tk.map((t) => companyName(t).replace(/\s+(limited|ltd\.?)$/i, ''))
+    const what = metricLabel(metric).split(' (')[0].toLowerCase()
+    title = `Why ${names.join(' & ')}${names.length > 1 ? '' : '’s'} ${what} changed`
+  } else if (a.tool === 'get_value' && args.ticker) title = `${companyName(args.ticker as string)} · ${metricLabel(metric)}`
   else if (a.tool === 'get_trend' && args.ticker) title = `${companyName(args.ticker as string)} · ${metricLabel(metric)}`
   else if (a.tool === 'compare') {
     const tk = (d?.chart?.series ?? []).map((s) => s.ticker).filter((x, i, xs) => x && xs.indexOf(x) === i) as string[]
@@ -51,15 +62,21 @@ export function AnswerCard({ a }: { a: AnswerView }) {
       styles={{ title: { whiteSpace: 'normal' }, body: { paddingTop: 18 } }}
       title={
         <div>
-          <div className="eyebrow">{KIND[a.tool ?? ''] ?? 'Answer'}{span ? ` · ${span}` : ''}{args.scope && args.scope !== 'consolidated' ? ` · ${args.scope}` : ''}</div>
+          <div className="eyebrow">{explain ? 'Figures + annual report' : KIND[a.tool ?? ''] ?? 'Answer'}{explain && args.fy ? ` · ${args.fy} report` : span ? ` · ${span}` : ''}{args.scope && args.scope !== 'consolidated' ? ` · ${args.scope}` : ''}</div>
           <h3 className="answer-title">{title}</h3>
+          {readAs.length > 0 && (
+            <div className="read-as">
+              <EditOutlined />
+              <span>{readAs.map((n) => n.charAt(0).toUpperCase() + n.slice(1)).join(' · ')}</span>
+            </div>
+          )}
         </div>
       }
       extra={
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <Tooltip title="What understood the question">
-            <Tag icon={a.mode === 'llm' ? <RobotOutlined /> : a.mode === 'search' ? <SearchOutlined /> : <SettingOutlined />} style={{ margin: 0 }}>
-              {a.mode === 'llm' ? 'LLM' : a.mode === 'search' ? 'report search' : 'rules'}
+            <Tag icon={a.mode === 'llm' ? <RobotOutlined /> : a.mode === 'search' ? <SearchOutlined /> : a.mode === 'explain' ? <BulbOutlined /> : <SettingOutlined />} style={{ margin: 0 }}>
+              {a.mode === 'llm' ? 'LLM' : a.mode === 'search' ? 'report search' : a.mode === 'explain' ? 'figures + reports' : 'rules'}
             </Tag>
           </Tooltip>
           {verified > 0 && (
@@ -89,13 +106,24 @@ export function AnswerCard({ a }: { a: AnswerView }) {
             {!d.table && empty('No filed figures for this request. Nothing is estimated or filled in.')}
           </>
         )}
+        {explain && a.figures && (
+          <>
+            {a.figures.stats.length > 0 && <Rise i={1}><StatStrip stats={a.figures.stats} goodWhenUp={goodWhenUp} /></Rise>}
+            {a.figures.chart && <Rise i={2}><ChartPanel data={a.figures} /></Rise>}
+            {a.figures.table && <Rise i={3}><DataTable table={a.figures.table} /></Rise>}
+          </>
+        )}
+        {explain && !a.figures && empty('No filed figures for these years. The report passages are below.')}
         {d && a.tool === 'search_reports' && (
-          d.passages.length
-            ? <Rise i={1}><Passages passages={d.passages} query={(args.query as string) ?? a.question} /></Rise>
-            : empty('Nothing relevant found in the loaded annual reports.')
+          <>
+            {explain && <div className="eyebrow" style={{ marginTop: 4 }}>What the annual report says</div>}
+            {d.passages.length
+              ? <Rise i={explain ? 4 : 1}><Passages passages={d.passages} query={(args.query as string) ?? a.question} /></Rise>
+              : empty('Nothing relevant found in the loaded annual reports.')}
+          </>
         )}
         {a.errors.length > 0 && <Alert type="error" showIcon title={a.errors.join(' · ')} />}
-        {d && <Sources sources={d.sources} notes={[...a.notes, ...d.notes]} />}
+        {d && <Sources sources={[...(a.figures?.sources ?? []), ...d.sources]} notes={[...a.notes.filter((n) => !READ_AS.test(n)), ...d.notes]} />}
       </div>
     </Card>
   )

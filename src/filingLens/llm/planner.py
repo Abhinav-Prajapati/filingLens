@@ -18,7 +18,7 @@ from typing import Any
 
 from filingLens.llm.client import LLMClient, LLMReply
 from filingLens.llm.executor import Context, ToolResult, execute
-from filingLens.llm.prompt import build_system_prompt
+from filingLens.llm.prompt import build_system_prompt, join_names, short_name
 from filingLens.llm.tools import tool_schemas, validate_call
 from filingLens.nlu.rules import _norm, month_quarter
 
@@ -89,6 +89,13 @@ def fix_month_quarter(question: str, tool: str, args: Any) -> tuple[Any, str | N
     return args.model_copy(update={"fy": mq[0], "quarter": mq[1]}), note
 
 
+def loaded_names(ctx: Context) -> list[str]:
+    """Names of the covered companies that have figures (all covered ones when none do yet)."""
+    have = {r[0] for r in ctx.con.execute("SELECT DISTINCT ticker FROM fact")}
+    names = [c.name for t, c in ctx.registry.companies.items() if t in have]
+    return names or [c.name for c in ctx.registry.companies.values()]
+
+
 def _tickers(args: dict) -> list[str]:
     return list(args.get("tickers") or ([args["ticker"]] if args.get("ticker") else []))
 
@@ -97,7 +104,8 @@ def ask(question: str, llm: LLMClient, ctx: Context, max_attempts: int = 2,
         system_prompt: str | None = None) -> AskResult:
     t0 = time.monotonic()
     reg = ctx.registry
-    system = system_prompt or build_system_prompt(reg, ctx.latest_fy())
+    loaded = loaded_names(ctx)
+    system = system_prompt or build_system_prompt(reg, ctx.latest_fy(), loaded=loaded)
     messages: list[dict] = [{"role": "system", "content": system},
                             {"role": "user", "content": question}]
     tools = tool_schemas(reg)
@@ -142,7 +150,7 @@ def ask(question: str, llm: LLMClient, ctx: Context, max_attempts: int = 2,
         messages += [_assistant_turn(reply), _correction(reply, err)]
     if out.result is None:
         if any("did not name" in e for e in out.errors):
-            names = ", ".join(c.name for c in ctx.registry.companies.values())
+            names = join_names([short_name(n) for n in loaded], "and")
             out.result = ToolResult("ask_user", "company not covered", clarify=(
                 f"I only have data for {names}. Which of these would you like?"))
         else:

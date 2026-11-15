@@ -23,9 +23,11 @@ export interface DataView {
   passages: Passage[]; sources: Source[]; notes: string[]; clarify: string | null
 }
 export interface AnswerView {
-  question: string; ok: boolean; mode: 'llm' | 'rules' | 'search'; tool: string | null
+  question: string; ok: boolean; mode: 'llm' | 'rules' | 'search' | 'explain'; tool: string | null
   args: Record<string, unknown> | null; answer: string | null; answer_rejected: string | null
-  data: DataView | null; notes: string[]; errors: string[]; seconds: number
+  data: DataView | null
+  figures: DataView | null              // "why" questions: the figures behind the report passages
+  notes: string[]; errors: string[]; seconds: number
 }
 export interface CompanyInfo {
   ticker: string; name: string; sector: string; fys: string[]; latest_fy: string | null
@@ -145,10 +147,11 @@ export const admin = {
 }
 
 export const api = {
-  ask: (question: string, useLlm: boolean, signal?: AbortSignal) =>
+  /** ``previous``: the last answer, so a short follow-up ("Wipro", "and Infosys?") is read with it. */
+  ask: (question: string, useLlm: boolean, signal?: AbortSignal, previous?: { question: string; tool: string | null }) =>
     request<AnswerView>('/ask', {
       method: 'POST', headers: { 'content-type': 'application/json' }, signal,
-      body: JSON.stringify({ question, use_llm: useLlm, write_answer: useLlm }),
+      body: JSON.stringify({ question, use_llm: useLlm, write_answer: useLlm, previous: previous ?? null }),
     }),
   health: () => request<Health>('/health'),
   companies: () => get<CompanyInfo[]>('/companies'),

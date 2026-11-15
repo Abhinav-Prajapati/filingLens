@@ -3,6 +3,7 @@ a plain result: rows of raw values, unit, notes and citations. No LLM involved h
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -216,13 +217,34 @@ def compare(a: Compare, ctx: Context) -> ToolResult:
 
 
 def search_reports(a: SearchReports, ctx: Context) -> ToolResult:
+    return search_passages(ctx, a.query, a.tickers,
+                           [a.fy] if a.fy and a.fy != "latest" else [],
+                           [a.section] if a.section else [], a.k)
+
+
+def search_passages(ctx: Context, query: str, tickers: list[str], fys: list[str],
+                    sections: list[str], k: int = 5,
+                    tiers: list[tuple[list[str], list[str]]] | None = None,
+                    must: list[str] | None = None) -> ToolResult:
+    """Report passages for ``query`` among ``tickers``. ``tiers``: (fys, sections) filters
+    tried in order, each topping up the hits of the ones before (most specific first); by
+    default just (fys, sections). ``must``: keep only passages that mention one of these
+    words (any ending: "profit" matches "profits")."""
     from filingLens.retrieval.search import Searcher, SearchFilters
 
     s = ctx.searcher() if ctx.searcher else Searcher(ctx.con)
-    hits = s.search(a.query, SearchFilters(tickers=tuple(a.tickers),
-                                           fys=(a.fy,) if a.fy and a.fy != "latest" else (),
-                                           sections=(a.section,) if a.section else ()), k=a.k)
-    r = ToolResult("search_reports", f"search: {a.query}", columns=["rank", "source", "text"])
+    hits: list[Any] = []
+    for tf, ts in tiers or [(fys, sections)]:
+        if len(hits) >= k:
+            break
+        seen = {h.chunk_id for h in hits}
+        found = s.search(query, SearchFilters(tickers=tuple(tickers), fys=tuple(tf),
+                                              sections=tuple(ts)), k=k * 3 if must else k)
+        if must:
+            pat = re.compile(r"\b(" + "|".join(map(re.escape, must)) + r")", re.IGNORECASE)
+            found = [h for h in found if pat.search(h.text)]
+        hits += [h for h in found if h.chunk_id not in seen][:k - len(hits)]
+    r = ToolResult("search_reports", f"search: {query}", columns=["rank", "source", "text"])
     r.rows = [{"rank": i, "source": h.context_line, "text": h.text} for i, h in enumerate(hits, 1)]
     r.citations = [{"ticker": h.ticker, "doc_id": h.doc_id[:12], "page": h.page,
                     "report": ctx.doc_label(h.doc_id), "section": h.section,

@@ -18,6 +18,7 @@ from filingLens.llm.client import LLMClient
 from filingLens.llm.executor import ToolResult
 
 NOT_FOUND = "NOT_IN_SOURCES"
+NO_REASON = "The report pages found do not state the reason."
 _NUM = re.compile(r"(?<![A-Za-z])\d[\d,]*(?:\.\d+)?")
 _CITE = re.compile(r"\[p\.?\s*(\d+)(?:\s*,\s*p?\.?\s*(\d+))*\]", re.IGNORECASE)
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -32,6 +33,16 @@ Rules:
 - Copy numbers exactly as they appear in the passages.
 - Write 2 to 5 sentences. Answer in the language of the question (English or Hinglish).
 - If the passages do not answer the question, reply with exactly: {NOT_FOUND}"""
+
+EXPLAIN_SYSTEM = f"""You explain a change in an Indian company's financials using ONLY the material
+given: a table of verified figures from its filings, and passages from its annual reports.
+Rules:
+- Start with what the figures show (copy the numbers exactly from the table).
+- Then give the reasons the passages state. Cite the page of each reason in square brackets,
+  e.g. [p.44]. Never give a reason that is not in the passages; no outside knowledge.
+- Write 2 to 5 sentences. Answer in the language of the question (English or Hinglish).
+- If the passages give no reason, say what the figures show and add: "{NO_REASON}"
+  If even the figures are missing, reply exactly: {NOT_FOUND}"""
 
 DATA_SYSTEM = """You summarise a small table of verified financial data in 1 or 2 sentences.
 Rules:
@@ -125,15 +136,24 @@ def check_answer(text: str, evidence_text: str, question: str, pages: set[int],
 
 
 # ---- the call ------------------------------------------------------------------------------
-def compose_answer(question: str, res: ToolResult, llm: LLMClient) -> Answer:
+def compose_answer(question: str, res: ToolResult, llm: LLMClient,
+                   figures: ToolResult | None = None) -> Answer:
+    """``figures``: for "why" questions, the verified data shown next to the passages; the
+    model may quote its numbers, and reasons must still cite report pages."""
     ev = evidence(res)
+    fig = evidence(figures) if figures is not None else None
     if ev is None:
         return Answer()
     is_text = res.tool == "search_reports"
     pages = {int(c["page"]) for c in res.citations if c.get("page")}
-    messages = [{"role": "system", "content": SEARCH_SYSTEM if is_text else DATA_SYSTEM},
-                {"role": "user", "content": f"Question: {question}\n\n"
-                                            f"{'Passages' if is_text else 'Table'}:\n{ev}"}]
+    if is_text and fig:
+        system, body = EXPLAIN_SYSTEM, f"Verified figures:\n{fig}\n\nPassages:\n{ev}"
+        ev = f"{fig}\n\n{ev}"                     # numbers may come from either
+    else:
+        system = SEARCH_SYSTEM if is_text else DATA_SYSTEM
+        body = f"{'Passages' if is_text else 'Table'}:\n{ev}"
+    messages = [{"role": "system", "content": system},
+                {"role": "user", "content": f"Question: {question}\n\n{body}"}]
     try:
         reply = llm.chat(messages, [])
     except Exception as e:                       # noqa: BLE001 - fall back to raw evidence
@@ -141,7 +161,9 @@ def compose_answer(question: str, res: ToolResult, llm: LLMClient) -> Answer:
     text = _THINK.sub("", reply.content or "").strip()
     if not text or NOT_FOUND in text:
         return Answer(used_llm=True, rejected="the sources do not answer the question")
-    reason = check_answer(text, ev, question, pages, need_citations=is_text)
+    # stating only the figures and that the pages give no reason needs no page citation
+    no_reason = bool(fig) and NO_REASON.lower().rstrip(".") in text.lower()
+    reason = check_answer(text, ev, question, pages, need_citations=is_text and not no_reason)
     if reason:
         return Answer(used_llm=True, rejected=reason)
     cited = sorted({int(p) for m in _CITE.finditer(text) for p in m.groups() if p})

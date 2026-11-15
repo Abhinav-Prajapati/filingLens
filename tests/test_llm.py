@@ -170,7 +170,8 @@ def test_uncovered_company_is_not_swapped_for_a_covered_one(ctx):
     swap = native("get_value", {"ticker": "INFY", "metric": "revenue", "fy": "FY24"})
     r = ask("Wipro revenue FY24", FakeLLM([swap, swap]), ctx)
     assert not r.ok and all("did not name INFY" in e for e in r.errors)
-    assert "only have data for Tata Consultancy Services, Infosys" in r.result.clarify
+    # only companies with figures are offered (this fixture has TCS and Infosys)
+    assert "only have data for Tata Consultancy Services and Infosys." in r.result.clarify
     fixed = ask("Wipro revenue FY24", FakeLLM([swap, native("ask_user", {
         "question": "I only cover TCS, Infosys and HUL."}, "c2")]), ctx)
     assert fixed.ok and fixed.attempts == 2 and fixed.result.clarify.startswith("I only cover")
