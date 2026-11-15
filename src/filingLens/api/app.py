@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from filingLens.analytics.derived import DERIVED
 from filingLens.api.admin import add_admin_routes
 from filingLens.api.auth import add_auth_routes, make_auth
+from filingLens.api.embeddings import add_embedding_routes
 from filingLens.companies import DEFAULT_LIST_PATH, registry_with_overlay
 from filingLens.domain.fiscal import fy_int
 from filingLens.domain.registry import Registry
@@ -153,6 +154,8 @@ def create_app(database_url: str | None = None, vectors: str | Path | None = Non
     app.state.downloads = add_admin_routes(app, auth.require_role("admin"), st, lock,
                                            data_dir / "inbox", objects,
                                            database_url=database_url)
+    app.state.embeddings = add_embedding_routes(app, auth.require_role("admin"), st, lock,
+                                                database_url=database_url)
 
     def run_tool(tool: str, params: dict[str, Any]) -> DataView:
         params = {k: v for k, v in params.items() if v not in (None, [])}

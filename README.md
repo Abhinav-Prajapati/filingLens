@@ -208,10 +208,18 @@ Admin only (`src/filingLens/api/admin.py`; in the web UI: **Admin → Data**):
 | `POST /admin/companies/{symbol}/download` | queue a download: every filing NSE has that isn't held → S3 bucket → ingest (adds an untracked company first) |
 | `GET /admin/companies/{symbol}/download`, `GET /admin/jobs` | progress of downloads (this server session) |
 | `GET /admin/companies/{symbol}/files` | the company's files in the bucket, with 15-minute download links |
+| `GET /admin/embeddings` / `POST` / `DELETE` | the semantic-search embedding job: status; start (`{"tickers": [...]}`, `{"doc_ids": [...]}` or `{}` for every pending report; `"device": "auto"\|"cpu"`); stop after the current batch |
 
 The list is local and quick; NSE is asked one request at a time, so downloads run one company
 after another. After a download the company can be asked about at once (figures and keyword
-search); run `filinglens index` for semantic search (it uses the GPU, which llama-server shares).
+search). For semantic search, embed its annual reports: in **Admin → Data** the "PDF not
+embedded" filter lists companies with reports still to embed, each report shows ✓ / a % /
+plain, and "Embed" (per report, per company, or all pending) starts a background job that
+embeds one report after another with live progress. The vector file is saved after each
+report, so a stopped job keeps its work and the next run continues. "Auto" uses the GPU
+(shared with llama-server) and falls back to the CPU when it is full; choose "CPU" to leave the
+GPU to the LLM (about 2–3 passages a second on a laptop CPU). `filinglens index` does the same
+from the command line.
 Files are kept at `s3://filinglens/filings/<TICKER>/<xbrl|annual_report>/`; `work/inbox` is the
 local working copy the parsers read. Refresh the equity list with `filinglens companies --refresh`. Settings: `FILINGLENS_COOKIE_SECURE=1` when served over HTTPS;
 `FILINGLENS_AUTH_SECRET` signs reset/verification tokens (not used yet).

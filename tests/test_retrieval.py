@@ -125,3 +125,24 @@ def test_cli_index_and_search(tmp_path, capsys):
     assert main(["search", "final dividend", "--vectors", vec, "--ticker", "tcs"]) == 0
     out = capsys.readouterr().out
     assert "[1] TCS | Annual Report FY25" in out and "dividend" in out
+
+
+def test_embed_documents_one_by_one_resumes_and_drops_stale_rows(db, tmp_path):
+    from filingLens.retrieval.index import embed_documents, pending_by_document
+
+    path, emb, seen = tmp_path / "v.npy", CountingEmbedder(), []
+    assert embed_documents(db, emb, path, ["doc-TCS"], lambda d, done, total: seen.append(
+        (d, done, total))) == 3
+    assert seen[0] == ("doc-TCS", 0, 3) and seen[-1] == ("doc-TCS", 3, 3)
+    p = pending_by_document(db, path)
+    assert (p["doc-TCS"].done, p["doc-INFY"].done) == (3, 0)
+    emb.calls = 0
+    assert embed_documents(db, emb, path, ["doc-TCS", "doc-INFY"]) == 3   # TCS kept, INFY added
+    assert emb.calls == 3
+    db.execute("DELETE FROM chunk WHERE doc_id='doc-TCS'")
+    embed_documents(db, emb, path, ["doc-old"])
+    idx = VectorIndex.load(path)
+    assert not any(c.startswith("TCS-") and c != "TCS-old" for c in idx.chunk_ids)   # dropped
+    assert "TCS-old" in idx.row_of and idx.vectors.shape[0] == len(idx.chunk_ids)
+    stop = embed_documents(db, emb, tmp_path / "w.npy", ["doc-INFY"], cancelled=lambda: True)
+    assert stop == 0                                           # stopped before the first batch

@@ -6,21 +6,27 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import {
   CheckCircleFilled, CloudDownloadOutlined, CloudServerOutlined, CloudUploadOutlined, DatabaseOutlined, DownloadOutlined,
-  FileTextOutlined, ReloadOutlined, SearchOutlined,
+  FileTextOutlined, ReloadOutlined, SearchOutlined, ThunderboltOutlined,
 } from '@ant-design/icons'
-import { admin, type Job, type ListedCompanies, type ListedRow, type NSEAvailability, type StoredFile } from '../lib/api'
+import {
+  admin, type EmbedDevice, type EmbedJob, type Job, type ListedCompanies, type ListedRow, type NSEAvailability, type StoredFile,
+} from '../lib/api'
+import { embedding, useEmbedJob } from '../lib/embedJob'
+import { EmbeddingPanel, ReportTag } from './EmbeddingPanel'
 import { useMeta } from '../lib/meta'
 import { Rise } from './bits'
 
-type Show = 'all' | 'tracked' | 'xbrl' | 'reports' | 'stored' | 'untracked'
+type Show = 'all' | 'tracked' | 'xbrl' | 'reports' | 'unembedded' | 'stored' | 'untracked'
 
 const hasData = (r: ListedRow) => r.xbrl_files > 0 || r.fys.length > 0 || r.annual_reports.length > 0
+const needsEmbedding = (r: ListedRow) => r.reports.some((x) => x.embedded < x.passages)
 
 const SHOW: { value: Show; label: string; test: (r: ListedRow) => boolean }[] = [
   { value: 'all', label: 'All', test: () => true },
   { value: 'tracked', label: 'Tracked', test: (r) => r.tracked },
   { value: 'xbrl', label: 'Has XBRL', test: (r) => r.xbrl_files > 0 || r.fys.length > 0 },
   { value: 'reports', label: 'Has reports', test: (r) => r.annual_reports.length > 0 },
+  { value: 'unembedded', label: 'PDF not embedded', test: needsEmbedding },
   { value: 'stored', label: 'In S3', test: (r) => r.stored > 0 },
   { value: 'untracked', label: 'Not tracked', test: (r) => !r.tracked },
 ]
@@ -109,6 +115,20 @@ export function AdminData() {
     start(r.symbol).catch((e: Error) => message.error(`${r.symbol}: ${e.message}`))
   }, [start, message])
 
+  const [device, setDevice] = useState<EmbedDevice>('auto')
+  const embedJob = useEmbedJob((j) => {
+    reload()
+    if (j.state === 'done') message.success(`Embedding finished: ${j.message}`)
+    else if (j.state === 'stopped') message.info(`Embedding stopped: ${j.message}`)
+    else message.error(`Embedding failed: ${j.error ?? j.message}`)
+  })
+  const embed = useCallback((body: { doc_ids?: string[]; tickers?: string[] }, what: string) => {
+    embedJob.start({ ...body, device })
+      .then((j) => message.info(`Embedding ${j.items.length} report${j.items.length === 1 ? '' : 's'}${what ? ` of ${what}` : ''}`))
+      .catch((e: Error) => message.error(e.message))
+  }, [embedJob, device, message])
+  const embedRunning = embedding(embedJob.job)
+
   // keep the open drawer's row in sync with reloaded data
   const openRow = open && data ? data.rows.find((r) => r.symbol === open.symbol) ?? open : open
 
@@ -142,7 +162,7 @@ export function AdminData() {
 
   const columns: ColumnsType<ListedRow> = [
     {
-      title: 'Company', key: 'symbol', fixed: 'left', width: 240,
+      title: 'Company', key: 'symbol', fixed: 'left', width: 220,
       sorter: (a, b) => a.symbol.localeCompare(b.symbol), defaultSortOrder: 'ascend',
       render: (_, r) => (
         <div className="co-cell">
@@ -151,11 +171,15 @@ export function AdminData() {
         </div>
       ),
     },
-    { title: 'Series', dataIndex: 'series', width: 76, render: (s: string) => <Tag style={{ margin: 0 }} className="mono">{s}</Tag> },
     {
-      title: 'Listed', dataIndex: 'listed_on', width: 110,
+      title: 'Series · listed', dataIndex: 'listed_on', width: 120,
       sorter: (a, b) => (a.listed_on ?? '').localeCompare(b.listed_on ?? ''),
-      render: (d: string | null) => <span className="muted num">{date(d)}</span>,
+      render: (d: string | null, r) => (
+        <div className="hold">
+          <Tag style={{ margin: 0, width: 'fit-content' }} className="mono">{r.series}</Tag>
+          <span className="muted num" style={{ fontSize: 12 }}>{date(d)}</span>
+        </div>
+      ),
     },
     {
       title: 'Status', key: 'tracked', width: 104,
@@ -166,7 +190,7 @@ export function AdminData() {
     },
     {
       title: <Tooltip title="Ingested XBRL results: the years with figures, the latest quarter, and files downloaded but not ingested yet">XBRL figures</Tooltip>,
-      key: 'xbrl', width: 190,
+      key: 'xbrl', width: 170,
       sorter: (a, b) => a.fys.length - b.fys.length || a.xbrl_files - b.xbrl_files,
       render: (_, r) => (
         <div className="hold">
@@ -179,13 +203,16 @@ export function AdminData() {
       ),
     },
     {
-      title: 'Annual reports', key: 'reports', width: 140,
+      title: <Tooltip title="Ingested annual-report PDFs. ✓ = embedded for semantic search; a % = partly; plain = keyword search only">Annual reports</Tooltip>,
+      key: 'reports', width: 180,
       sorter: (a, b) => a.annual_reports.length - b.annual_reports.length,
       render: (_, r) => (
         <div className="hold">
-          {r.annual_reports.length
-            ? <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{r.annual_reports.map((fy) => <Tag key={fy} style={{ margin: 0 }}>{fy}</Tag>)}</span>
-            : <span className="muted">–</span>}
+          {r.reports.length
+            ? <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{r.reports.map((x) => <ReportTag key={x.doc_id} r={x} />)}</span>
+            : r.annual_reports.length
+              ? <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{r.annual_reports.map((fy) => <Tag key={fy} style={{ margin: 0 }}>{fy}</Tag>)}</span>
+              : <span className="muted">–</span>}
           {r.pending_reports > 0 && <span className="pending">{r.pending_reports} downloaded, not ingested</span>}
         </div>
       ),
@@ -201,7 +228,7 @@ export function AdminData() {
       render: (n: number) => (n ? <span className="num">{n.toLocaleString('en-IN')}</span> : <span className="muted">–</span>),
     },
     {
-      title: '', key: 'actions', width: 214, fixed: 'right',
+      title: '', key: 'actions', width: 150, fixed: 'right',
       render: (_, r) => {
         const j = jobs[r.symbol]
         if (isActive(j)) {
@@ -219,7 +246,14 @@ export function AdminData() {
                 <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => download(r)}>Download</Button>
               </Tooltip>
             )}
-            <Button size="small" icon={<CloudServerOutlined />} onClick={() => setOpen(r)}>{hasData(r) ? 'Check NSE' : 'Details'}</Button>
+            {needsEmbedding(r) && (
+              <Tooltip title={embedRunning ? 'An embedding job is running' : 'Embed this company’s annual reports for semantic search'}>
+                <Button size="small" icon={<ThunderboltOutlined />} disabled={embedRunning} onClick={() => embed({ tickers: [r.symbol] }, r.symbol)} aria-label={`Embed ${r.symbol}'s annual reports`} />
+              </Tooltip>
+            )}
+            <Tooltip title={hasData(r) ? 'Check NSE, reports, files' : 'Details'}>
+              <Button size="small" icon={<CloudServerOutlined />} onClick={() => setOpen(r)} aria-label={`Open ${r.symbol}`} />
+            </Tooltip>
           </div>
         )
       },
@@ -256,6 +290,9 @@ export function AdminData() {
         />
       )}
 
+      <EmbeddingPanel index={data.index} job={embedJob.job} device={device} setDevice={setDevice}
+        onEmbedAll={() => embed({}, '')} onStop={() => { embedJob.stop().catch((e: Error) => message.error(e.message)) }} />
+
       <div className="toolbar">
         <Input
           allowClear
@@ -282,7 +319,7 @@ export function AdminData() {
           rowKey="symbol"
           columns={columns}
           dataSource={rows}
-          scroll={{ x: 1250 }}
+          scroll={{ x: 1170 }}
           showSorterTooltip={false}
           locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={query ? `No listed company matches “${query}”` : 'Nothing here'} /> }}
           pagination={{ defaultPageSize: 25, pageSizeOptions: [25, 50, 100], showSizeChanger: true, size: 'small', showTotal: (n, [a, b]) => `${a}–${b} of ${n.toLocaleString('en-IN')}` }}
@@ -291,14 +328,16 @@ export function AdminData() {
       </Card>
 
       <CompanyDrawer row={openRow} job={openRow ? jobs[openRow.symbol] : undefined} storage={data.storage}
-        onDownload={download} onClose={() => setOpen(null)} />
+        onDownload={download} onClose={() => setOpen(null)}
+        embedJob={embedJob.job} onEmbed={(docIds) => openRow && embed({ doc_ids: docIds }, openRow.symbol)} />
     </div>
   )
 }
 
 /** One company: what NSE has (live), the download job, and its files in the bucket. */
-function CompanyDrawer({ row, job, storage, onDownload, onClose }: {
+function CompanyDrawer({ row, job, storage, onDownload, onClose, embedJob, onEmbed }: {
   row: ListedRow | null; job?: Job; storage: boolean; onDownload: (r: ListedRow) => void; onClose: () => void
+  embedJob: EmbedJob | null; onEmbed: (docIds: string[]) => void
 }) {
   const [res, setRes] = useState<NSEAvailability | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -389,6 +428,10 @@ function CompanyDrawer({ row, job, storage, onDownload, onClose }: {
                 ]}
               />
             </>
+          )}
+
+          {row.reports.length > 0 && (
+            <ReportsList row={row} job={embedJob} onEmbed={onEmbed} />
           )}
 
           {storage && (
@@ -482,5 +525,45 @@ function DownloadPanel({ row, job, newFiles, checked, storage, onDownload }: {
         {checked && newFiles ? `Download ${newFiles} new file${newFiles === 1 ? '' : 's'}${storage ? ' to S3' : ''}` : `Download${storage ? ' to S3' : ''} & ingest`}
       </Button>
     </Card>
+  )
+}
+
+/** The company's annual-report PDFs: passages, how many are embedded, and Embed per report. */
+function ReportsList({ row, job, onEmbed }: { row: ListedRow; job: EmbedJob | null; onEmbed: (docIds: string[]) => void }) {
+  const running = embedding(job)
+  const live = new Map((job?.items ?? []).map((i) => [i.doc_id, i]))
+  const pending = row.reports.filter((r) => r.embedded < r.passages)
+  return (
+    <div>
+      <div className="dl-head" style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div className="eyebrow">Annual reports · semantic search</div>
+        {pending.length > 1 && (
+          <Button size="small" icon={<ThunderboltOutlined />} disabled={running} onClick={() => onEmbed(pending.map((r) => r.doc_id))}>
+            Embed all {pending.length}
+          </Button>
+        )}
+      </div>
+      <div className="report-list">
+        {row.reports.map((r) => {
+          const i = live.get(r.doc_id)
+          const done = i && running ? i.done : r.embedded
+          const total = i && running ? i.passages : r.passages
+          const full = done >= total && total > 0
+          return (
+            <div key={r.doc_id} className="report-row">
+              <FileTextOutlined />
+              <span className="report-name"><b>{r.fy ?? '?'}</b> annual report</span>
+              <Progress percent={total ? Math.round((done / total) * 100) : 0} size="small" showInfo={false}
+                status={i?.state === 'running' && running ? 'active' : full ? 'success' : 'normal'} style={{ margin: 0, flex: 1 }} />
+              <span className="num muted" style={{ fontSize: 12, minWidth: 96, textAlign: 'right' }}>{done.toLocaleString('en-IN')}/{total.toLocaleString('en-IN')}</span>
+              {full ? <Tag className="tag-up" style={{ margin: 0 }}>embedded</Tag>
+                : i && running && i.state === 'waiting' ? <Tag style={{ margin: 0 }}>queued</Tag>
+                  : i && running && i.state === 'running' ? <Tag style={{ margin: 0 }}>embedding…</Tag>
+                    : <Button size="small" icon={<ThunderboltOutlined />} disabled={running} onClick={() => onEmbed([r.doc_id])}>Embed</Button>}
+            </div>
+          )
+        })}
+      </div>
+    </div>
   )
 }

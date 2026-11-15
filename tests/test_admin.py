@@ -235,3 +235,76 @@ def test_download_needs_admin_and_a_listed_symbol(setup):
         assert c.post("/admin/companies/TCS/download").status_code == 403
         make_admin(tmp_path, "ana@example.com")
         assert c.post("/admin/companies/NOPE/download").status_code == 404
+
+
+# ---- embeddings ------------------------------------------------------------------------------
+@pytest.fixture
+def with_reports(setup, monkeypatch):
+    """Two annual reports with passages (TCS FY24, FY25); embeddings with the hash model."""
+    from filingLens.domain.models import Chunk
+    from filingLens.retrieval.embedder import HashEmbedder
+    from filingLens.storage.repos import TextRepo
+
+    app, tmp_path, _ = setup
+    con = connect()
+    for fy, n in (("FY24", 3), ("FY25", 2)):
+        doc = f"ar-{fy}"
+        con.execute("INSERT INTO document(doc_id, ticker, doc_type, fy, original_name) VALUES "
+                    "(?, 'TCS', 'annual_report', ?, ?)", (doc, fy, f"TCS_annual_{fy}.pdf"))
+        TextRepo(con).replace(doc, [], [Chunk(f"{doc}-{i}", doc, "TCS", fy, "annual_report",
+                                              "none", "text", "mdna", i, i, f"text {fy} {i}",
+                                              f"TCS | Annual Report {fy} | page {i}")
+                                        for i in range(n)])
+    con.close()
+    app.state.embeddings.factory = lambda model, device: HashEmbedder()
+    return app, tmp_path
+
+
+def wait_embed(c, timeout=30):
+    end = time.time() + timeout
+    while time.time() < end:
+        job = c.get("/admin/embeddings").json()
+        if job and job["state"] not in ("loading", "running"):
+            return job
+        time.sleep(0.1)
+    raise AssertionError(f"embedding did not finish: {job}")
+
+
+def test_lists_reports_with_their_embedding_status(with_reports):
+    app, tmp_path = with_reports
+    with TestClient(app) as c:
+        sign_in(c, "boss@example.com")
+        make_admin(tmp_path, "boss@example.com")
+        v = c.get("/admin/companies").json()
+        assert v["index"] == {"model": None, "passages": 5, "embedded": 0, "reports_pending": 2,
+                              "companies_pending": 1}
+        tcs = next(r for r in v["rows"] if r["symbol"] == "TCS")
+        assert [(r["fy"], r["passages"], r["embedded"]) for r in tcs["reports"]] == [
+            ("FY24", 3, 0), ("FY25", 2, 0)]
+
+
+def test_embedding_job_runs_report_by_report(with_reports):
+    app, tmp_path = with_reports
+    with TestClient(app) as c:
+        sign_in(c, "boss@example.com")
+        make_admin(tmp_path, "boss@example.com")
+        assert c.get("/admin/embeddings").json() is None
+        r = c.post("/admin/embeddings", json={"tickers": ["tcs"], "device": "cpu"})
+        assert r.status_code == 202 and [i["fy"] for i in r.json()["items"]] == ["FY24", "FY25"]
+        job = wait_embed(c)
+        assert job["state"] == "done" and job["embedded"] == 5 and job["model"] == "hash-512"
+        assert [(i["state"], i["done"], i["passages"]) for i in job["items"]] == [
+            ("done", 3, 3), ("done", 2, 2)]
+        v = c.get("/admin/companies").json()
+        assert v["index"]["embedded"] == 5 and v["index"]["reports_pending"] == 0
+        assert c.post("/admin/embeddings", json={}).status_code == 400     # nothing left
+        assert c.delete("/admin/embeddings").status_code == 409            # nothing running
+    assert (tmp_path / "vectors.npy").exists()
+
+
+def test_embedding_needs_admin(with_reports):
+    app, _ = with_reports
+    with TestClient(app) as c:
+        sign_in(c, "ana@example.com")
+        assert c.post("/admin/embeddings", json={}).status_code == 403
+        assert c.get("/admin/embeddings").status_code == 403

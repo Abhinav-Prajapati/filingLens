@@ -44,10 +44,21 @@ const BASE: string = import.meta.env.VITE_API ?? (import.meta.env.DEV ? '/api' :
 export interface ListedRow {
   symbol: string; name: string; series: string; isin: string; listed_on: string | null; tracked: boolean
   xbrl_files: number; fys: string[]; latest_quarter: string | null; annual_reports: string[]; passages: number
+  embedded: number                                    // passages with a vector (semantic search)
+  reports: ReportDoc[]                                // each ingested annual-report PDF
   stored: number                                      // files in the S3 bucket
   pending_xbrl: number; pending_reports: number      // in the inbox, not ingested yet
 }
-export interface ListedCompanies { total: number; list_updated: string | null; storage: boolean; rows: ListedRow[] }
+export interface ReportDoc { doc_id: string; fy: string | null; passages: number; embedded: number }
+export interface IndexInfo { model: string | null; passages: number; embedded: number; reports_pending: number; companies_pending: number }
+export interface ListedCompanies { total: number; list_updated: string | null; storage: boolean; index: IndexInfo; rows: ListedRow[] }
+export type EmbedDevice = 'auto' | 'cpu' | 'cuda'
+export interface EmbedItem { doc_id: string; ticker: string; fy: string | null; passages: number; done: number; state: 'waiting' | 'running' | 'done' | 'stopped' | 'failed' }
+export interface EmbedJob {
+  state: 'loading' | 'running' | 'done' | 'stopped' | 'failed'; device: string | null; model: string | null
+  items: EmbedItem[]; embedded: number; message: string; error: string | null
+  started_at: string; finished_at: string | null; stop_requested: boolean
+}
 export type JobStage = 'queued' | 'listing' | 'downloading' | 'ingesting' | 'done' | 'failed'
 export interface Job {
   symbol: string; name: string; stage: JobStage; done: number; total: number; downloaded: number; stored: number
@@ -142,6 +153,10 @@ export const admin = {
   download: (symbol: string) => request<Job>(`/admin/companies/${encodeURIComponent(symbol)}/download`, { method: 'POST' }),
   jobs: () => request<Job[]>('/admin/jobs'),
   files: (symbol: string) => request<StoredFile[]>(`/admin/companies/${encodeURIComponent(symbol)}/files`),
+  embedJob: () => request<EmbedJob | null>('/admin/embeddings'),
+  embed: (body: { doc_ids?: string[]; tickers?: string[]; device: EmbedDevice }) =>
+    request<EmbedJob>('/admin/embeddings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+  stopEmbed: () => request<EmbedJob>('/admin/embeddings', { method: 'DELETE' }),
   nse: (symbol: string, refresh = false, signal?: AbortSignal) =>
     request<NSEAvailability>(`/admin/companies/${encodeURIComponent(symbol)}/nse${refresh ? '?refresh=true' : ''}`, { signal }),
 }

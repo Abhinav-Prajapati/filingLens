@@ -41,6 +41,7 @@ from filingLens.companies import add_companies, load_equity_list
 from filingLens.domain.fiscal import fy_int
 from filingLens.ingest.errors import IngestError
 from filingLens.ingest.pdf_pipeline import ingest_inbox
+from filingLens.retrieval.index import indexed_ids, pending_by_document
 from filingLens.storage.db import Database, connect
 from filingLens.storage.objects import ObjectStore, filing_key
 
@@ -49,6 +50,21 @@ if TYPE_CHECKING:
 
 NSE_CACHE_SECONDS = 3600
 JOBS_KEPT = 50
+
+
+class ReportDoc(BaseModel):
+    doc_id: str
+    fy: str | None
+    passages: int                        # text chunks of the PDF
+    embedded: int                        # of those, with a vector (semantic search)
+
+
+class IndexInfo(BaseModel):
+    model: str | None                    # what the vector file was built with
+    passages: int                        # report passages in the database
+    embedded: int                        # of those, with a vector
+    reports_pending: int                 # PDFs with passages not embedded
+    companies_pending: int
 
 
 class ListedRow(BaseModel):
@@ -62,7 +78,9 @@ class ListedRow(BaseModel):
     fys: list[str]                       # full years with figures, oldest first
     latest_quarter: str | None           # "FY27 Q2"
     annual_reports: list[str]            # FYs of ingested annual-report PDFs
-    passages: int                        # report text chunks (searchable)
+    passages: int                        # report text chunks (keyword-searchable)
+    embedded: int                        # of those, with a vector (semantic search)
+    reports: list[ReportDoc]             # each ingested annual-report PDF
     stored: int                          # files in the S3 bucket
     pending_xbrl: int                    # in the inbox, not ingested yet
     pending_reports: int
@@ -72,6 +90,7 @@ class ListedCompanies(BaseModel):
     total: int
     list_updated: str | None             # when NSE's equity list was downloaded (ISO)
     storage: bool                        # an S3 bucket is configured
+    index: IndexInfo
     rows: list[ListedRow]
 
 
@@ -154,13 +173,14 @@ def _iso_date(text: str) -> str | None:
 
 def _empty() -> dict[str, Any]:
     return {"fys": set(), "quarters": set(), "xbrl_files": 0, "annual_reports": set(),
-            "passages": 0, "stored": 0, "pending_xbrl": 0, "pending_reports": 0}
+            "passages": 0, "embedded": 0, "reports": [], "stored": 0, "pending_xbrl": 0,
+            "pending_reports": 0}
 
 
-def local_holdings(con: Database, inbox: Path,
-                   stored: dict[str, int] | None = None) -> dict[str, dict[str, Any]]:
-    """Per ticker: FYs, latest quarter, XBRL files, annual reports, passages, files in the
-    bucket, and files in the inbox that are not ingested yet."""
+def local_holdings(con: Database, inbox: Path, stored: dict[str, int] | None = None,
+                   vectors: Path | None = None) -> dict[str, dict[str, Any]]:
+    """Per ticker: FYs, latest quarter, XBRL files, annual reports (each with passages and
+    embedded passages), files in the bucket, and files in the inbox not ingested yet."""
     h: dict[str, dict[str, Any]] = defaultdict(_empty)
     for t, fy in con.execute("SELECT DISTINCT ticker, fy FROM fact WHERE period_type='FY'"):
         h[t]["fys"].add(fy)
@@ -168,12 +188,19 @@ def local_holdings(con: Database, inbox: Path,
                                 "WHERE period_type='Q'"):
         h[t]["quarters"].add((fy, q))
     ingested: set[str] = set()
-    for t, kind, fy, name in con.execute("SELECT ticker, doc_type, fy, original_name FROM document"):
+    progress = pending_by_document(con, vectors) if vectors is not None else {}
+    for doc_id, t, kind, fy, name in con.execute(
+            "SELECT doc_id, ticker, doc_type, fy, original_name FROM document"):
         ingested.add(name)
         if kind == "xbrl_result":
             h[t]["xbrl_files"] += 1
         elif kind == "annual_report":
             h[t]["annual_reports"].add(fy or "?")
+            p = progress.get(doc_id)
+            if p is not None:
+                h[t]["reports"].append(ReportDoc(doc_id=doc_id, fy=fy, passages=p.total,
+                                                 embedded=p.done))
+                h[t]["embedded"] += p.done
     for t, n in con.execute("SELECT ticker, COUNT(*) FROM chunk GROUP BY ticker"):
         h[t]["passages"] = n
     for t, n in (stored or {}).items():
@@ -344,7 +371,7 @@ def add_admin_routes(app: Any, require_admin: Any, st: State, lock: threading.Lo
         listed = load_equity_list(st.equity_list)
         stored = stored_counts()
         with lock:
-            held = local_holdings(st.con, inbox, stored)
+            held = local_holdings(st.con, inbox, stored, st.vectors)
         rows = []
         for c in listed:
             x = held.get(c.symbol) or _empty()
@@ -355,12 +382,20 @@ def add_admin_routes(app: Any, require_admin: Any, st: State, lock: threading.Lo
                 xbrl_files=x["xbrl_files"], fys=sorted(x["fys"], key=fy_int),
                 latest_quarter=f"{lq[0]} {lq[1]}" if lq else None,
                 annual_reports=sorted(x["annual_reports"]), passages=x["passages"],
+                embedded=x["embedded"], reports=sorted(x["reports"], key=lambda r: r.fy or ""),
                 stored=x["stored"], pending_xbrl=x["pending_xbrl"],
                 pending_reports=x["pending_reports"]))
         updated = (dt.datetime.fromtimestamp(st.equity_list.stat().st_mtime).isoformat(
             timespec="seconds") if st.equity_list.exists() else None)
+        pending = [r for x in held.values() for r in x["reports"] if r.embedded < r.passages]
+        index = IndexInfo(model=indexed_ids(st.vectors)[0],
+                          passages=sum(x["passages"] for x in held.values()),
+                          embedded=sum(x["embedded"] for x in held.values()),
+                          reports_pending=len(pending),
+                          companies_pending=sum(any(r.embedded < r.passages for r in x["reports"])
+                                                for x in held.values()))
         return ListedCompanies(total=len(rows), list_updated=updated, storage=store is not None,
-                               rows=rows)
+                               index=index, rows=rows)
 
     @app.get("/admin/companies/{symbol}/nse", response_model=NSEAvailability,
              dependencies=admin, tags=["admin"])
