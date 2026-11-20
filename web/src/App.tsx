@@ -53,7 +53,7 @@ function Gate() {
       <Flex align="center" justify="center" style={{ minHeight: '100vh' }}>
         <Result
           status="warning"
-          title="Can’t reach the filingLens API"
+          title="Can’t reach the FilingLens API"
           subTitle={<>Start it with <Typography.Text code>filinglens serve</Typography.Text>, then try again.</>}
           extra={<Button type="primary" icon={<ReloadOutlined />} onClick={retry}>Try again</Button>}
         />
@@ -141,7 +141,7 @@ function Shell() {
           {!ready ? null : error ? (
             <Result
               status="warning"
-              title="Can’t reach the filingLens API"
+              title="Can’t reach the FilingLens API"
               subTitle={<>{error} <Typography.Text code>filinglens serve</Typography.Text></>}
               extra={<Button type="primary" icon={<ReloadOutlined />} onClick={retry}>Try again</Button>}
             />

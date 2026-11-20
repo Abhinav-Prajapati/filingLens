@@ -51,7 +51,7 @@ export function Welcome() {
         }}
       >
         <Flex align="center" justify="space-between" style={{ height: '100%' }}>
-          <Typography.Link onClick={() => go('home')} aria-label="filingLens home"><Brand sub={null} /></Typography.Link>
+          <Typography.Link onClick={() => go('home')} aria-label="FilingLens home"><Brand sub={null} /></Typography.Link>
           <Space>
             <ThemeSwitch />
             {view !== 'login' && <Button onClick={() => go('login')}>Sign in</Button>}
@@ -63,7 +63,7 @@ export function Welcome() {
         {view === 'home' ? <Home go={go} /> : <AuthForm mode={view} go={go} />}
       </Layout.Content>
       <Layout.Footer style={{ textAlign: 'center' }}>
-        <Typography.Text type="secondary">filingLens · figures from NSE filings and company annual reports</Typography.Text>
+        <Typography.Text type="secondary">FilingLens · figures from NSE filings and company annual reports</Typography.Text>
       </Layout.Footer>
     </Layout>
   )
@@ -183,7 +183,7 @@ function AuthForm({ mode, go }: { mode: 'login' | 'register'; go: (v: PublicView
             {signUpMode ? 'Create account' : 'Sign in'}
           </Button>
         </Form>
-        <Divider plain>{signUpMode ? 'Already have an account?' : 'New to filingLens?'}</Divider>
+        <Divider plain>{signUpMode ? 'Already have an account?' : 'New to FilingLens?'}</Divider>
         <Button block onClick={() => go(signUpMode ? 'login' : 'register')}>
           {signUpMode ? 'Sign in' : 'Create an account'}
         </Button>
