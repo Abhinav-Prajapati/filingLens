@@ -133,8 +133,7 @@ export function AnswerCard({ a }: { a: AnswerView }) {
               : empty('Nothing relevant found in the loaded annual reports.')}
           </>
         )}
-        {a.errors.length > 0 && <Alert type="error" showIcon title={a.errors.join(' · ')} />}
-        {d && <Sources sources={[...(a.figures?.sources ?? []), ...d.sources]} notes={[...a.notes.filter((n) => !READ_AS.test(n)), ...d.notes]} />}
+        {d && <Sources sources={[...(a.figures?.sources ?? []), ...d.sources]} notes={[...a.notes.filter((n) => !READ_AS.test(n)), ...d.notes, ...a.errors.map((e) => `model retry: ${e}`)]} />}
       </Flex>
     </Card>
   )

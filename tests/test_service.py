@@ -9,6 +9,7 @@ from filingLens.domain.models import Chunk
 from filingLens.domain.registry import load_registry
 from filingLens.llm.client import FakeLLM, LLMReply, ToolCall
 from filingLens.llm.executor import Context
+from filingLens.nlu.followup import Previous
 from filingLens.nlu.rules import plan, question_words
 from filingLens.service import AnswerService
 from filingLens.storage.repos import FactRepo, TextRepo
@@ -192,3 +193,43 @@ def test_bad_refusal_or_search_is_replaced_by_checked_data(ctx):
     assert r.tool == "get_value" and r.result.rows[0]["value"] == 240893
     why = AnswerService(ctx, FakeLLM([search, "ok"])).answer("Why did TCS revenue grow?")
     assert why.tool == "search_reports"
+
+
+def test_why_follow_up_explains_the_previous_figure(ctx):
+    prev = Previous("TCS revenue FY24", "get_value")
+    for llm in (None, FakeLLM([])):        # rules mode, and with a model that is never needed
+        r = AnswerService(ctx, llm, write_answer=False).answer("what was the reason for that growth", prev)
+        assert r.question == "TCS revenue FY24, what was the reason for that growth"
+        assert r.mode == "explain" and r.tool == "search_reports"
+        assert any("previous question" in n for n in r.notes)
+
+
+def test_message_read_alone_still_gives_the_model_the_previous_turn(ctx):
+    llm = FakeLLM([call("get_value", {"ticker": "TCS", "metric": "revenue", "fy": "FY23"})])
+    r = AnswerService(ctx, llm, write_answer=False).answer(
+        "show me the numbers from one year earlier please", Previous("TCS revenue FY24", "get_value"))
+    assert r.ok and r.result.rows[0]["value"] == 225458
+    assert llm.requests[0][1]["content"] == "TCS revenue FY24"
+
+
+def test_why_question_about_one_year_explains_the_change_and_corrects_the_premise(ctx):
+    r = AnswerService(ctx, None).answer("why did TCS revenue fall in FY24")
+    assert r.args["figures"]["tool"] == "get_trend"
+    assert (r.args["figures"]["from_fy"], r.args["figures"]["to_fy"]) == ("FY23", "FY24")
+    assert "fall" not in r.args["query"].split() and "increase" in r.args["query"].split()
+    assert r.answer.text.startswith("Tata Consultancy Services's revenue from operations did not "
+                                    "fall, it rose.")
+
+
+@pytest.mark.parametrize("text", ["thanks", "Thank you!", "ok", "shukriya"])
+def test_small_talk_is_answered_without_a_lookup(ctx, text):
+    llm = FakeLLM([])
+    r = AnswerService(ctx, llm).answer(text, Previous("TCS revenue FY24", "get_value"))
+    assert r.tool == "ask_user" and r.result.clarify and llm.requests == []
+
+
+def test_joined_follow_up_is_planned_by_rules_even_with_a_model(ctx):
+    llm = FakeLLM(["Both grew."])                 # only the written summary is asked for
+    r = AnswerService(ctx, llm).answer("and Infosys?", Previous("TCS revenue FY24", "get_value"))
+    assert r.mode == "rules" and r.tool == "compare"
+    assert r.args["tickers"] == ["TCS", "INFY"] and len(llm.requests) == 1

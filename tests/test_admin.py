@@ -308,3 +308,16 @@ def test_embedding_needs_admin(with_reports):
         sign_in(c, "ana@example.com")
         assert c.post("/admin/embeddings", json={}).status_code == 403
         assert c.get("/admin/embeddings").status_code == 403
+
+
+def test_same_filing_under_a_second_name_counts_as_ingested(tmp_path):
+    from filingLens.api.admin import _ingested
+    from filingLens.ingest.utils.files import sha256_file
+
+    first, again, other = tmp_path / "A_1.xml", tmp_path / "A_2.xml", tmp_path / "B.xml"
+    first.write_text("<xbrl>same</xbrl>")
+    again.write_text("<xbrl>same</xbrl>")          # NSE published it twice
+    other.write_text("<xbrl>new</xbrl>")
+    names, ids = {first.name}, {sha256_file(first)}
+    assert _ingested(first, names, ids) and _ingested(again, names, ids)
+    assert not _ingested(other, names, ids)

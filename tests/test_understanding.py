@@ -77,11 +77,31 @@ def test_answer_to_a_clarifying_question_continues_it():
     ("TCS revenue FY24", "Infosys net margin FY24", False),     # a full question of its own
     ("TCS revenue FY24", "thanks", False),
     ("TCS revenue FY24", "what does the company say about its plans for the next five years",
-     False),                                                  # long: a new question
+     True),                                     # long, but "its" points back to TCS
+    ("TCS revenue FY24", "what does Infosys say about its plans for the next five years",
+     False),                                    # names its own company: a new question
+    ("TCS revenue FY24", "what are the biggest risks for the Indian IT industry next year",
+     False),                                    # long, nothing points back
 ])
 def test_short_follow_ups_join_the_previous_question(prev, text, joined):
     q, note = combine(Previous(prev, "get_value"), text, REG)
     assert (q != text) is joined and (note is not None) is joined
+
+
+@pytest.mark.parametrize("text", [
+    "what was reason for that growth",
+    "why did it grow",
+    "what was the reason for this increase in profit compared to last year",
+    "uska reason kya tha",
+])
+def test_follow_ups_that_point_back_are_read_with_the_previous_question(text):
+    q, note = combine(Previous("what was tcs profit in fy24", "get_value"), text, REG)
+    assert q == f"what was tcs profit in fy24, {text}" and note
+
+
+def test_why_question_naming_another_company_stands_alone():
+    prev = Previous("what was tcs profit in fy24", "get_value")
+    assert combine(prev, "why did infosys profit fall", REG) == ("why did infosys profit fall", None)
 
 
 # ---- examples are built from the data ---------------------------------------------------------

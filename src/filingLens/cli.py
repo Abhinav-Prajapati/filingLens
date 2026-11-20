@@ -622,7 +622,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
         print(answer_view(r, ctx.registry).model_dump_json(indent=1))
         return 0 if r.ok else 1
-    how = {"llm": "LLM", "rules": "rules", "search": "search"}[r.mode]
+    how = {"llm": "LLM", "rules": "rules", "search": "search", "explain": "why"}.get(r.mode, r.mode)
     print(f"→ {r.tool}({json.dumps(r.args, ensure_ascii=False)})   "
           f"[{how}, {r.seconds}s" + (f", attempts {r.attempts}" if r.mode == "llm" else "")
           + "]")

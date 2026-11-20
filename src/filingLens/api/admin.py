@@ -42,6 +42,7 @@ from filingLens.companies import add_companies, load_equity_list
 from filingLens.domain.fiscal import fy_int
 from filingLens.ingest.errors import IngestError
 from filingLens.ingest.pdf_pipeline import ingest_inbox
+from filingLens.ingest.utils.files import sha256_file
 from filingLens.retrieval.index import pending_by_document
 from filingLens.storage.db import Database, connect
 from filingLens.storage.objects import ObjectStore, filing_key
@@ -190,11 +191,13 @@ def local_holdings(con: Database, inbox: Path, stored: dict[str, int] | None = N
                                 "WHERE period_type='Q'"):
         h[t]["quarters"].add((fy, q))
     ingested: set[str] = set()
+    doc_ids: set[str] = set()
     # passages count as embedded only with vectors of ``model`` (the one new vectors use)
     progress = pending_by_document(con, vectors, model) if vectors is not None else {}
     for doc_id, t, kind, fy, name in con.execute(
             "SELECT doc_id, ticker, doc_type, fy, original_name FROM document"):
         ingested.add(name)
+        doc_ids.add(doc_id)
         if kind == "xbrl_result":
             h[t]["xbrl_files"] += 1
         elif kind == "annual_report":
@@ -213,10 +216,25 @@ def local_holdings(con: Database, inbox: Path, stored: dict[str, int] | None = N
             if d.is_dir():
                 for key, sub, pat in (("pending_xbrl", "xbrl", "*.xml"),
                                       ("pending_reports", "annual_report", "*.pdf")):
-                    n = sum(f.name not in ingested for f in (d / sub).glob(pat))
+                    n = sum(not _ingested(f, ingested, doc_ids) for f in (d / sub).glob(pat))
                     if n:
                         h[d.name][key] = n
     return h
+
+
+_HASHES: dict[tuple[str, int, int], str] = {}
+
+
+def _ingested(f: Path, names: set[str], doc_ids: set[str]) -> bool:
+    """By name, else by content: NSE sometimes publishes the same filing twice under two names,
+    and ingest stores it once (documents are keyed by content hash) under one of them."""
+    if f.name in names:
+        return True
+    st = f.stat()
+    key = (str(f), st.st_size, st.st_mtime_ns)
+    if key not in _HASHES:                      # hash each unmatched file once
+        _HASHES[key] = sha256_file(f)
+    return _HASHES[key] in doc_ids
 
 
 class Downloads:

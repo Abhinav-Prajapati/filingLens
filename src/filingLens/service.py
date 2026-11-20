@@ -102,6 +102,11 @@ DATA_TOOLS = ("get_value", "get_trend", "compare")
 NARRATIVE = ["mdna", "directors_report", "front_matter"]
 FELL = "decline decrease decreased lower fell drop reduced pressure"
 ROSE = "growth increase increased higher rose improved driven"
+# the direction a question assumes ("why did profit fall"); the filings may say otherwise
+SAID_FELL = re.compile(r"\b(fall|fell|fallen|falling|drop|dropped|decline|declined|decrease|"
+                       r"decreased|down|lower|shrink|shrank|ghata|ghat|gira|giri|kam)\b")
+SAID_ROSE = re.compile(r"\b(rise|rose|risen|rising|grow|grew|grown|growth|increase|increased|up|"
+                       r"higher|jump|jumped|improve|improved|badha|badhi|zyada)\b")
 # text questions the rules may still find a metric in ("why did revenue fall")
 EXPLAIN = re.compile(r"\b(why|reason|reasons|explain|kyun|kyon|driver|drivers|drove|"
                            r"strategy|outlook|guidance|risk|risks|commentary|plan|plans)\b")
@@ -185,13 +190,47 @@ def explain_query(question: str, metrics: list[str], change: float | None,
     for t, c in reg.companies.items():
         for a in (t.lower(), c.name.lower(), *c.aliases):
             drop.update(a.split())
-    words = [w for w in re.findall(r"[a-z]+", question.lower()) if w not in drop and len(w) > 2]
+    words = [w for w in re.findall(r"[a-z]+", question.lower()) if w not in drop and len(w) > 2
+             and not (change is not None and (SAID_FELL.fullmatch(w) or SAID_ROSE.fullmatch(w)))]
     for m in metrics:
         label = reg.metrics[m].desc if m in reg.metrics else m.replace("_", " ")
         words += re.findall(r"[a-z]+", label.lower().split("(")[0])
-    if change is not None:
+    if change is not None:                 # the direction the filings show, not the one assumed
         words += (FELL if change < 0 else ROSE).split()
     return " ".join(dict.fromkeys(words)) or question
+
+
+# "thanks", "ok", "hi": no question to answer, and nothing to look up
+SMALL_TALK = re.compile(r"(thanks?|thank you|thanks a lot|thx|ty|ok|okay|okk|cool|great|nice|"
+                        r"got it|perfect|awesome|hi|hello|hey|bye|good|fine|sure|"
+                        r"shukriya|dhanyavaad|dhanyavad|accha|acha|theek hai|thik hai)[ !.]*")
+SMALL_TALK_REPLY = ("Ask about a company's figures (\"TCS revenue FY24\"), a comparison, or "
+                    "what its annual report says.")
+
+
+def as_change(tool: str, args: dict) -> tuple[str, dict]:
+    """A "why" question about one year ("why did Infosys profit fall") is about the change
+    into that year: ask for the year before too, so there is a change to explain."""
+    if tool != "get_value" or args.get("quarter"):
+        return tool, args
+    fy = args.get("fy") or "latest"
+    span = ({"last_n_years": 2} if fy == "latest"
+            else {"from_fy": f"FY{int(fy[2:]) - 1:02d}", "to_fy": fy})
+    return "get_trend", {"ticker": args["ticker"], "metric": args["metric"],
+                         "scope": args.get("scope", "consolidated"), **span}
+
+
+def premise_note(question: str, change: float | None, what: str) -> str | None:
+    """"Why did profit fall" when it rose: say so first, from the figures."""
+    if change is None or abs(change) < 0.05:
+        return None
+    norm = rules._norm(question)
+    fell, rose = bool(SAID_FELL.search(norm)), bool(SAID_ROSE.search(norm))
+    if fell and not rose and change > 0:
+        return f"{what} did not fall, it rose."
+    if rose and not fell and change < 0:
+        return f"{what} did not rise, it fell."
+    return None
 
 
 def not_loaded_message(missing: list[ListedCompany], reg: Registry) -> str:
@@ -214,17 +253,24 @@ class AnswerService:
         t0 = time.monotonic()
         reg = self.ctx.registry
         read: list[str] = []                          # how the question was read
+        if SMALL_TALK.fullmatch(question.strip().lower()):
+            r = Response(question, "rules", "ask_user", {})
+            r.result = ToolResult("ask_user", "nothing to look up", clarify=SMALL_TALK_REPLY)
+            r.seconds = round(time.monotonic() - t0, 2)
+            return r
         question, follow = combine(previous, question, reg)
         if follow:
             read.append(follow)
         question, fixes = correct_companies(question, reg, rules.question_words(reg))
         read += [f"read “{f.typed}” as “{f.read_as}”" for f in fixes]
-        r = self._answer(question)
+        # a message read on its own still goes to the model with the turn before it
+        r = self._answer(question, None if follow else previous, joined=bool(follow))
         r.notes[:0] = read
         r.seconds = round(time.monotonic() - t0, 2)
         return r
 
-    def _answer(self, question: str) -> Response:
+    def _answer(self, question: str, previous: Previous | None = None,
+                joined: bool = False) -> Response:
         missing = self.guard.find(question) if self.guard else []
         if missing:
             r = Response(question, "rules", "ask_user", {}, notes=[
@@ -235,7 +281,17 @@ class AnswerService:
         explain = self._explain(question)
         if explain is not None:
             return explain
-        via_llm = self._via_llm(question) if self.llm is not None else None
+        if joined and self.llm is not None:
+            # "TCS revenue FY24, and Infosys" is text the code put together for the rules, and
+            # small models misread it (two calls, one company): plan it by rules when they can
+            p = rules.plan(question, self.ctx.registry)
+            if p is not None and p.tool in DATA_TOOLS:
+                r = self._via_rules(question)
+                if r.result is not None and not r.result.empty:
+                    if self.write_answer:
+                        r.answer = self._checked_answer(question, r.result)
+                    return r
+        via_llm = self._via_llm(question, previous) if self.llm is not None else None
         if via_llm is None:
             r = self._via_rules(question)
             if self.llm is None:
@@ -256,13 +312,14 @@ class AnswerService:
         p = rules.plan(question, reg)
         if p is None or p.tool not in DATA_TOOLS:
             return None
+        tool, raw = as_change(p.tool, p.args)
         try:
-            args = validate_call(p.tool, p.args, reg)
+            args = validate_call(tool, raw, reg)
         except ValueError:
             return None
         r = Response(question, "explain", "search_reports", notes=[
             "a “why” question: the figures from the filings, and what the annual report says"])
-        figures = self._run(p.tool, args, r)
+        figures = self._run(tool, args, r)
         a = args.model_dump()
         tickers = a.get("tickers") or [a["ticker"]]
         metrics = a.get("metrics") or [a["metric"]]
@@ -283,7 +340,7 @@ class AnswerService:
                              + (f"{'s' if len(tickers) > 1 else ''} of {', '.join(tickers)}")
                              + ": management discussion and directors' report first")
         r.args = {"query": query, "tickers": tickers, "fy": fy[0] if fy else None,
-                  "section": None, "k": 5, "figures": {"tool": p.tool, **a}}
+                  "section": None, "k": 5, "figures": {"tool": tool, **a}}
         r.result, r.support = res, (figures if figures.rows else None)
         if self.llm is not None and self.write_answer and res.rows:
             r.answer = compose_answer(question, res, self.llm, figures=r.support)
@@ -293,12 +350,22 @@ class AnswerService:
             elif self.llm is None:
                 r.notes.append(f"answered without the LLM ({self.no_llm_reason})")
             r.answer = Answer(figures_sentence(r.support, metrics, reg))
+        from filingLens.views import metric_label
+
+        unit = "pp" if any(st.get("kind") == "change_pp" for st in figures.stats or []) else "%"
+        name = short_company(reg.companies[tickers[0]].name) if tickers[0] in reg.companies else ""
+        label = metric_label(metrics[0], reg).split(" (")[0]
+        note = premise_note(question, change, f"{name}'s {label[0].lower()}{label[1:]}"
+                            if name else label) if len(tickers) == 1 and unit == "%" else None
+        if note and r.answer.text:
+            r.answer.text = f"{note} {r.answer.text}"
         return r
 
     # ---- LLM path -------------------------------------------------------------------------
-    def _via_llm(self, question: str) -> Response | None:
+    def _via_llm(self, question: str, previous: Previous | None = None) -> Response | None:
         assert self.llm is not None
-        res = ask(question, self.llm, self.ctx)
+        res = ask(question, self.llm, self.ctx, previous=previous.question if previous else None,
+                  previous_tool=previous.tool if previous else None)
         out = Response(question, "llm", res.tool, res.args, res.result, attempts=res.attempts,
                        errors=list(res.errors))
         if res.ok and res.tool in ("ask_user", "search_reports"):

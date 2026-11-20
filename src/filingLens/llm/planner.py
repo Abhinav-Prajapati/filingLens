@@ -65,17 +65,45 @@ def _correction(reply: LLMReply, error: str) -> dict:
     return {"role": "user", "content": msg}
 
 
-def ungrounded_tickers(question: str, tickers: list[str], ctx: Context) -> list[str]:
+def named_tickers(text: str, ctx: Context) -> set[str]:
+    """Covered companies the text names, by ticker, name or alias."""
+    q = text.lower()
+    return {t for t, c in ctx.registry.companies.items()
+            if any(re.search(rf"\b{re.escape(a)}\b", q)
+                   for a in (t.lower(), c.name.lower(), *c.aliases))}
+
+
+def ungrounded_tickers(question: str, tickers: list[str], ctx: Context,
+                       previous: str | None = None) -> list[str]:
     """Tickers in the call that the question never names (by ticker, name or alias).
     Small models swap an uncovered company ("Wipro") for a covered one; this catches it.
-    Questions about "all"/"teeno"/"sab" companies may use any covered ticker."""
+    Questions about "all"/"teeno"/"sab" companies may use any covered ticker. A question that
+    names no company ("why did that grow") may use the previous question's companies; one that
+    names its own may not, so an earlier company never creeps into a new question."""
     if ALL_COMPANIES.search(question):
         return []
-    q = question.lower()
-    named = {t for t, c in ctx.registry.companies.items()
-             if any(re.search(rf"\b{re.escape(a)}\b", q)
-                    for a in (t.lower(), c.name.lower(), *c.aliases))}
+    named = named_tickers(question, ctx)
+    if not named and previous:
+        named = named_tickers(previous, ctx)
     return [t for t in tickers if t not in named]
+
+
+def history(previous: str | None, previous_tool: str | None) -> list[dict]:
+    """The turn before, so the model can tell what "that" or "it" refers to."""
+    if not previous or not previous.strip():
+        return []
+    did = (f"(answered from the data with {previous_tool})" if previous_tool
+           and previous_tool != "ask_user" else "(asked a clarifying question)")
+    return [{"role": "user", "content": previous.strip()}, {"role": "assistant", "content": did}]
+
+
+def _asks_back(reply: LLMReply) -> str | None:
+    """A plain-text reply that is a question to the user ("Which company do you mean?"): the
+    model meant ask_user without calling it."""
+    text = (reply.content or "").strip()
+    if reply.error or reply.tool_calls or "?" not in text or len(text) > 400:
+        return None
+    return text
 
 
 def fix_month_quarter(question: str, tool: str, args: Any) -> tuple[Any, str | None]:
@@ -101,12 +129,14 @@ def _tickers(args: dict) -> list[str]:
 
 
 def ask(question: str, llm: LLMClient, ctx: Context, max_attempts: int = 2,
-        system_prompt: str | None = None) -> AskResult:
+        system_prompt: str | None = None, previous: str | None = None,
+        previous_tool: str | None = None) -> AskResult:
     t0 = time.monotonic()
     reg = ctx.registry
     loaded = loaded_names(ctx)
     system = system_prompt or build_system_prompt(reg, ctx.latest_fy(), loaded=loaded)
     messages: list[dict] = [{"role": "system", "content": system},
+                            *history(previous, previous_tool),
                             {"role": "user", "content": question}]
     tools = tool_schemas(reg)
     out = AskResult(question)
@@ -118,6 +148,12 @@ def ask(question: str, llm: LLMClient, ctx: Context, max_attempts: int = 2,
             out.errors.append(f"LLM request failed: {type(e).__name__}: {e}")
             break
         out.replies.append(reply)
+        asked = _asks_back(reply)
+        if asked:
+            args = validate_call("ask_user", {"question": asked}, reg)
+            out.tool, out.args = "ask_user", args.model_dump()
+            out.result = execute("ask_user", args, ctx)
+            break
         if reply.error or not reply.tool_calls:
             err = reply.error or "no tool call in the reply"
         elif len(reply.tool_calls) > 1:
@@ -129,7 +165,7 @@ def ask(question: str, llm: LLMClient, ctx: Context, max_attempts: int = 2,
             except ValueError as e:
                 err = str(e)
             else:
-                bad = ungrounded_tickers(question, _tickers(args.model_dump()), ctx)
+                bad = ungrounded_tickers(question, _tickers(args.model_dump()), ctx, previous)
                 if bad:
                     err = (f"the user did not name {', '.join(bad)}. Use only companies named "
                            "in the question; if they named a company not in the list, call "

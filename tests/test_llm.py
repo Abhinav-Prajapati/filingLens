@@ -187,6 +187,28 @@ def test_grounding_accepts_aliases_and_all_company_questions(ctx):
         assert ask(q, FakeLLM([call]), ctx).ok, q
 
 
+def test_previous_turn_is_sent_and_its_company_may_be_used(ctx):
+    trend = native("get_trend", {"ticker": "TCS", "metric": "revenue", "last_n_years": 2})
+    llm = FakeLLM([trend])
+    r = ask("how did that change", llm, ctx, previous="TCS revenue FY24", previous_tool="get_value")
+    assert r.ok and r.errors == [] and r.args["ticker"] == "TCS"
+    sent = llm.requests[0]
+    assert [m["role"] for m in sent] == ["system", "user", "assistant", "user"]
+    assert sent[1]["content"] == "TCS revenue FY24" and sent[3]["content"] == "how did that change"
+
+
+def test_previous_company_never_creeps_into_a_question_naming_its_own(ctx):
+    both = native("compare", {"tickers": ["TCS", "INFY"], "metrics": ["revenue"]})
+    r = ask("Infosys revenue FY24", FakeLLM([both, both]), ctx, previous="TCS revenue FY24")
+    assert not r.ok and all("did not name TCS" in e for e in r.errors)
+
+
+def test_plain_text_question_from_the_model_is_a_clarification(ctx):
+    r = ask("what was the reason", FakeLLM(["Which company and metric do you mean?"]), ctx)
+    assert r.ok and r.tool == "ask_user" and r.errors == [] and r.attempts == 1
+    assert r.result.clarify == "Which company and metric do you mean?"
+
+
 def test_tool_failure_is_reported_not_raised(ctx):
     def boom():
         raise RuntimeError("CUDA out of memory")
