@@ -122,6 +122,7 @@ class AnswerView(BaseModel):
     notes: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     seconds: float = 0.0
+    chat_id: str | None = None                 # the chat this turn was saved to (POST /ask)
 
 
 # ---- building views ------------------------------------------------------------------------

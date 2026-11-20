@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import {
-  Alert, Button, Card, Col, Flex, Input, Popconfirm, Row, Skeleton, Space, Statistic, Steps, Switch, Tag, Tooltip, Typography,
+  Alert, Button, Card, Col, Flex, Input, Row, Skeleton, Space, Statistic, Steps, Switch, Tag, Tooltip, Typography,
   theme, type InputRef,
 } from 'antd'
 import {
-  BarChartOutlined, DeleteOutlined, FileSearchOutlined, LineChartOutlined, NumberOutlined, PieChartOutlined,
+  BarChartOutlined, FileSearchOutlined, LineChartOutlined, NumberOutlined, PieChartOutlined,
   RadarChartOutlined, SendOutlined, SwapOutlined, TranslationOutlined,
 } from '@ant-design/icons'
 import { api, ApiError, type AnswerView } from '../lib/api'
 import { useMeta } from '../lib/meta'
+import { useChats } from '../lib/chats'
 import { AnswerCard } from './AnswerCard'
 import { PageHeader } from './Chrome'
 
@@ -25,15 +26,14 @@ const PROMPTS = [
   { q: 'What are the key risks Infosys mentions in its annual report?', k: 'Report search', icon: <FileSearchOutlined /> },
 ]
 
-export const THREAD_KEY = 'filinglens.thread.v1'
-const load = (): Turn[] => {
-  try { return (JSON.parse(localStorage.getItem(THREAD_KEY) ?? '[]') as Turn[]).filter((t) => t.answer || t.error) } catch { return [] }
-}
-
-export function AskPage() {
+/** One chat: ``chatId`` null is a new chat, saved on its first question (then ``onChat`` moves
+ *  the URL to it). Turns come from the server, so a chat looks the same on every device. */
+export function AskPage({ chatId, onChat }: { chatId: string | null; onChat: (id: string | null) => void }) {
   const { token } = theme.useToken()
   const { health, loaded, companies } = useMeta()
-  const [turns, setTurns] = useState<Turn[]>(load)
+  const { chats, refresh, watchTitle } = useChats()
+  const [turns, setTurns] = useState<Turn[]>([])
+  const [loading, setLoading] = useState(false)
   const [q, setQ] = useState('')
   const [useLlm, setUseLlmState] = useState(() => {
     try { return localStorage.getItem('filinglens.llm') === '1' } catch { return false }
@@ -46,11 +46,29 @@ export function AskPage() {
   const input = useRef<InputRef>(null)
   const end = useRef<HTMLDivElement>(null)
   const abort = useRef<AbortController | null>(null)
+  const shown = useRef<string | null>(null)       // the chat whose turns are on screen
   const llmAvailable = !!health?.llm
+  const title = chats.find((c) => c.id === chatId)?.title
 
+  // open the chat in the URL (not when it is the one this page just created)
   useEffect(() => {
-    try { localStorage.setItem(THREAD_KEY, JSON.stringify(turns.filter((t) => t.answer || t.error).slice(-20))) } catch { /* storage off */ }
-  }, [turns])
+    if (chatId === shown.current) return
+    abort.current?.abort()
+    shown.current = chatId
+    setTurns([])
+    if (!chatId) { input.current?.focus(); return }
+    let live = true
+    setLoading(true)
+    api.chat(chatId)
+      .then((c) => {
+        if (!live) return
+        setTurns(c.items.map((t, i) => ({ id: `${c.id}-${i}`, question: t.question, useLlm: t.answer.mode === 'llm', answer: t.answer })))
+        requestAnimationFrame(() => end.current?.scrollIntoView({ block: 'end' }))
+      })
+      .catch(() => { if (live) { shown.current = null; onChat(null) } })   // deleted or not yours
+      .finally(() => live && setLoading(false))
+    return () => { live = false }
+  }, [chatId, onChat])
   // ?q=… asks on load (shareable links); ?llm=1 uses the model for it
   useEffect(() => {
     const params = new URLSearchParams(location.search)
@@ -72,25 +90,27 @@ export function AskPage() {
   const askWith = async (question: string, llm: boolean) => {
     const text = question.trim()
     if (text.length < 2) return
-    const last = [...turns].reverse().find((t) => t.answer)?.answer
-    const previous = last ? { question: last.question, tool: last.tool } : undefined
     const id = Math.random().toString(36).slice(2)
+    const into = shown.current
     setTurns((ts) => [...ts, { id, question: text, useLlm: llm }])
     setQ('')
     requestAnimationFrame(() => end.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }))
     abort.current = new AbortController()
     try {
-      const answer = await api.ask(text, llm, abort.current.signal, previous)
+      const answer = await api.ask(text, llm, abort.current.signal, into)
+      if (shown.current !== into) return                 // another chat was opened meanwhile
       setTurns((ts) => ts.map((t) => (t.id === id ? { ...t, answer } : t)))
+      if (!into && answer.chat_id) {                      // the first question started a chat
+        shown.current = answer.chat_id
+        onChat(answer.chat_id)
+        if (llm) watchTitle(answer.chat_id)
+        else void refresh()
+      } else void refresh()                               // moves the chat to the top
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : e instanceof Error && e.name === 'AbortError' ? 'Stopped.' : String(e)
       setTurns((ts) => ts.map((t) => (t.id === id ? { ...t, error: msg } : t)))
+      void refresh()                    // a stopped first question may still have made a chat
     }
-  }
-
-  const clear = () => {
-    try { localStorage.removeItem(THREAD_KEY) } catch { /* storage off */ }
-    setTurns([])
   }
 
   const fys = [...new Set(loaded.flatMap((c) => c.fys))].sort()
@@ -99,8 +119,8 @@ export function AskPage() {
   return (
     <Flex vertical style={{ maxWidth: 1120, margin: '0 auto', minHeight: `calc(100vh - ${token.paddingLG * 2}px)` }}>
       <PageHeader
-        title="Ask"
-        description="Questions in English or Hinglish, answered from filed figures and annual reports"
+        title={chatId && title ? title : 'Ask'}
+        description={chatId ? undefined : 'Questions in English or Hinglish, answered from filed figures and annual reports'}
         extra={
           <Space size="middle">
             <Tooltip title={llmAvailable ? `Model: ${health?.llm}` : 'No LLM configured: questions are understood by rules'}>
@@ -109,15 +129,13 @@ export function AskPage() {
                 <Typography.Text>LLM</Typography.Text>
               </Space>
             </Tooltip>
-            <Popconfirm title="Clear the conversation?" okText="Clear" cancelText="Keep" onConfirm={clear} disabled={!turns.length}>
-              <Button icon={<DeleteOutlined />} disabled={!turns.length}>Clear</Button>
-            </Popconfirm>
           </Space>
         }
       />
 
       <Flex vertical gap="large" style={{ flex: 1 }}>
-        {turns.length === 0 && (
+        {loading && <Card><Skeleton active paragraph={{ rows: 4 }} /></Card>}
+        {!loading && !chatId && turns.length === 0 && (
           <>
             <Card>
               <Row gutter={[24, 16]}>
@@ -165,7 +183,7 @@ export function AskPage() {
         <div ref={end} />
       </Flex>
 
-      <div style={{ position: 'sticky', bottom: 0, background: token.colorBgLayout, paddingBlock: token.padding, marginTop: token.marginLG }}>
+      <div style={{ position: 'sticky', bottom: 0, zIndex: token.zIndexPopupBase - 1, background: token.colorBgLayout, paddingBlock: token.padding, marginTop: token.marginLG }}>
         <form onSubmit={(e) => { e.preventDefault(); ask(q) }}>
           <Space.Compact block size="large">
             <Input

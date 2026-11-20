@@ -31,3 +31,13 @@ CREATE INDEX IF NOT EXISTS ix_chunk_doc ON chunk(doc_id);
 CREATE TABLE IF NOT EXISTS validation(
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, ticker TEXT, scope TEXT, period_end TEXT,
   check_name TEXT, status TEXT, detail TEXT);
+-- chats: each user's conversations on the Ask page; a turn keeps the answer as shown (AnswerView JSON)
+CREATE TABLE IF NOT EXISTS chat(
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT NOT NULL,
+  title_source TEXT NOT NULL DEFAULT 'question',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS ix_chat_user ON chat(user_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS chat_turn(
+  chat_id TEXT NOT NULL REFERENCES chat(id) ON DELETE CASCADE, seq INTEGER NOT NULL,
+  question TEXT NOT NULL, answer_json TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(chat_id, seq));

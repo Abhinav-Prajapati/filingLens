@@ -28,7 +28,15 @@ export interface AnswerView {
   data: DataView | null
   figures: DataView | null              // "why" questions: the figures behind the report passages
   notes: string[]; errors: string[]; seconds: number
+  chat_id: string | null                // the chat the turn was saved to
 }
+// chats: see filingLens.api.chats
+export interface ChatInfo {
+  id: string; title: string; title_source: 'question' | 'llm' | 'user'
+  created_at: string; updated_at: string; turns: number
+}
+export interface ChatTurn { question: string; answer: AnswerView }
+export interface ChatDetail extends ChatInfo { items: ChatTurn[] }
 export interface CompanyInfo {
   ticker: string; name: string; sector: string; fys: string[]; latest_fy: string | null
   latest_quarter: string | null; annual_reports: string[]; has_data: boolean
@@ -163,13 +171,24 @@ export const admin = {
 }
 
 export const api = {
-  /** ``previous``: the last answer, so a short follow-up ("Wipro", "and Infosys?") is read with it. */
-  ask: (question: string, useLlm: boolean, signal?: AbortSignal, previous?: { question: string; tool: string | null }) =>
+  /** Saved to ``chatId`` (its last turn is the follow-up context); none: starts a new chat. */
+  ask: (question: string, useLlm: boolean, signal?: AbortSignal, chatId?: string | null) =>
     request<AnswerView>('/ask', {
       method: 'POST', headers: { 'content-type': 'application/json' }, signal,
-      body: JSON.stringify({ question, use_llm: useLlm, write_answer: useLlm, previous: previous ?? null }),
+      body: JSON.stringify({ question, use_llm: useLlm, write_answer: useLlm, chat_id: chatId ?? null }),
     }),
   health: () => request<Health>('/health'),
+  chats: () => request<ChatInfo[]>('/chats'),
+  chat: (id: string) => request<ChatDetail>(`/chats/${encodeURIComponent(id)}`),
+  renameChat: (id: string, title: string) =>
+    request<ChatInfo>(`/chats/${encodeURIComponent(id)}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title }),
+    }),
+  deleteChat: (id: string) => request<void>(`/chats/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  importChat: (turns: ChatTurn[]) =>
+    request<ChatInfo>('/chats/import', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ turns }),
+    }),
   companies: () => get<CompanyInfo[]>('/companies'),
   metrics: () => get<MetricInfo[]>('/metrics'),
   trend: (p: { ticker: string; metric: string; last_n_years?: number; from_fy?: string; to_fy?: string; period?: 'FY' | 'Q' }) =>

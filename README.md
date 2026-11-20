@@ -180,7 +180,8 @@ filinglens serve                 # http://127.0.0.1:8765/docs  (--no-llm, --port
 
 | endpoint | returns |
 |---|---|
-| `POST /ask` `{"question": "...", "use_llm": true}` | written answer + data view |
+| `POST /ask` `{"question": "...", "use_llm": true, "chat_id": null}` | written answer + data view, saved to a chat (a new one without `chat_id`) |
+| `GET /chats`, `GET/PATCH/DELETE /chats/{id}` | your chats: list, turns, rename, delete |
 | `GET /value?ticker=TCS&metric=revenue&fy=FY24` | one figure |
 | `GET /trend?ticker=TCS&metric=net_margin&last_n_years=3` | series with YoY |
 | `GET /compare?tickers=TCS&tickers=INFY&metrics=revenue_from_operations` | side by side |

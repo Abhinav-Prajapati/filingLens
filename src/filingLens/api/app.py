@@ -1,6 +1,8 @@
 """HTTP API over the same AnswerService and tools the CLI uses. Run: ``filinglens serve``.
 
-    POST /ask                      question -> AnswerView (written answer + data view)
+    POST /ask                      question -> AnswerView (written answer + data view), saved
+                                   to a chat (see api.chats)
+    GET/PATCH/DELETE /chats...     the signed-in user's chats
     GET  /value   /trend  /compare  /search    direct data, no LLM: DataView (table, chart...)
     GET  /companies  /metrics  /health
     POST /auth/register /auth/login /auth/logout   GET /auth/me    accounts (see api.auth)
@@ -23,7 +25,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -31,7 +33,9 @@ from pydantic import BaseModel, Field
 from filingLens.analytics.derived import DERIVED
 from filingLens.api.admin import add_admin_routes
 from filingLens.api.auth import add_auth_routes, make_auth
+from filingLens.api.chats import add_chat_routes
 from filingLens.api.embeddings import add_embedding_routes
+from filingLens.chats import ChatRepo, llm_title, title_from_question
 from filingLens.companies import DEFAULT_LIST_PATH, registry_with_overlay
 from filingLens.domain.fiscal import fy_int
 from filingLens.domain.registry import Registry
@@ -60,6 +64,8 @@ class AskRequest(BaseModel):
     use_llm: bool = True                 # false: rule-based understanding only (fast, free)
     write_answer: bool = True            # false: data only, no written summary
     previous: PreviousTurn | None = None  # the turn before: short follow-ups are read with it
+    chat_id: str | None = None           # add the turn to this chat (its last turn is the
+    #                                      previous one); none: start a new chat
 
 
 class CompanyInfo(BaseModel):
@@ -150,8 +156,10 @@ def create_app(database_url: str | None = None, vectors: str | Path | None = Non
                               "NSE-listed companies.")
     origins = os.environ.get("FILINGLENS_CORS", DEFAULT_ORIGINS).split(",")
     app.add_middleware(CORSMiddleware, allow_origins=[o.strip() for o in origins if o.strip()],
-                       allow_methods=["GET", "POST"], allow_headers=["*"])
+                       allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["*"])
     add_auth_routes(app, auth)
+    chats = ChatRepo(con)
+    add_chat_routes(app, auth.current_user, chats, lock)
     app.state.downloads = add_admin_routes(app, auth.require_role("admin"), st, lock,
                                            data_dir / "inbox", objects,
                                            database_url=database_url)
@@ -168,17 +176,44 @@ def create_app(database_url: str | None = None, vectors: str | Path | None = Non
             res = execute(tool, args, st.ctx)
         return data_view(res, args.model_dump(), st.reg)
 
-    @app.post("/ask", response_model=AnswerView, dependencies=signed_in)
-    def ask(req: AskRequest) -> AnswerView:
+    def name_chat(chat_id: str, question: str) -> None:
+        """After the first answer is sent: ask the model for a better title. Runs outside
+        the lock, so it never holds up the next question's data lookups."""
+        if client is None or st.llm_paused:
+            return
+        title = llm_title(client, question, st.ctx)
+        if title:
+            with lock:
+                chats.set_llm_title(chat_id, title)
+
+    @app.post("/ask", response_model=AnswerView)
+    def ask(req: AskRequest, background: BackgroundTasks,
+            user: Any = Depends(auth.current_user)) -> AnswerView:
         paused = st.llm_paused
         reason = ("use_llm=false" if not req.use_llm else f"paused: {paused}" if paused
                   else "not configured")
         use = client if req.use_llm and not paused else None
         svc = AnswerService(st.ctx, use, req.write_answer, reason, st.guard)
+        uid = str(user.id)
         with lock:
             prev = Previous(req.previous.question, req.previous.tool) if req.previous else None
+            if req.chat_id is not None:
+                chat = chats.get(req.chat_id, uid)
+                if chat is None:
+                    raise HTTPException(404, "chat not found")
+                last = chats.turns(chat.id)[-1:]       # the follow-up context is the chat's
+                if last:
+                    a = AnswerView.model_validate_json(last[0].answer_json)
+                    prev = Previous(a.question, a.tool)
             r = svc.answer(req.question, prev)
-        return answer_view(r, st.reg)
+            view = answer_view(r, st.reg)
+            first = req.chat_id is None
+            chat_id = req.chat_id or chats.create(uid, title_from_question(req.question)).id
+            view.chat_id = chat_id
+            chats.add_turn(chat_id, req.question, view.model_dump_json())
+        if first and use is not None:          # the LLM switch is on: it may name the chat too
+            background.add_task(name_chat, chat_id, req.question)
+        return view
 
     @app.get("/value", response_model=DataView, dependencies=signed_in)
     def value(ticker: str, metric: str, fy: str = "latest",

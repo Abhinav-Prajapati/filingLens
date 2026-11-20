@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   App as AntApp, Avatar, Button, ConfigProvider, Divider, Dropdown, Flex, Layout, Menu, Result, Spin, Tag, Typography, theme,
 } from 'antd'
@@ -9,7 +9,9 @@ import { AuthProvider, useAuth } from './lib/auth'
 import { MetaProvider, useMeta } from './lib/meta'
 import { useIsDark } from './lib/theme'
 import { AdminData } from './components/AdminData'
-import { AskPage, THREAD_KEY } from './components/AskPage'
+import { AskPage } from './components/AskPage'
+import { ChatList } from './components/ChatList'
+import { ChatsProvider } from './lib/chats'
 import { Brand, ThemeSwitch } from './components/Chrome'
 import { ExplorePage } from './components/ExplorePage'
 import { Welcome } from './components/Welcome'
@@ -61,7 +63,7 @@ function Gate() {
     )
   }
   if (status === 'signed-out') return <Welcome />
-  return <MetaProvider><Shell /></MetaProvider>
+  return <MetaProvider><ChatsProvider><Shell /></ChatsProvider></MetaProvider>
 }
 
 function Shell() {
@@ -69,14 +71,32 @@ function Shell() {
   const { user, signOut } = useAuth()
   const { token } = theme.useToken()
   const isAdmin = user?.role === 'admin'
-  const [page, setPage] = useState<Page>(() => {
-    const h = location.hash.replace('#', '')
-    return h === 'explore' ? 'explore' : h === 'data' && isAdmin ? 'data' : 'ask'
-  })
-  useEffect(() => { history.replaceState(null, '', (location.search || '') + (page === 'ask' ? '#' : `#${page}`)) }, [page])
+  // the URL: #ask/<chat id> (a chat), #explore, #data; empty is a new chat
+  const read = useCallback((): { page: Page; chat: string | null } => {
+    const [h, id] = location.hash.replace('#', '').split('/')
+    if (h === 'explore') return { page: 'explore', chat: null }
+    if (h === 'data' && isAdmin) return { page: 'data', chat: null }
+    return { page: 'ask', chat: h === 'ask' && id ? id : null }
+  }, [isAdmin])
+  const [route, setRoute] = useState(read)
+  useEffect(() => {
+    const onHash = () => setRoute(read())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [read])
+  const go = useCallback((page: Page, chat: string | null = null, replace = false) => {
+    const hash = page === 'ask' ? (chat ? `#ask/${chat}` : '#') : `#${page}`
+    if (location.hash !== hash && !(hash === '#' && !location.hash)) {
+      history[replace ? 'replaceState' : 'pushState'](null, '', location.pathname + location.search + hash)
+    }
+    setRoute({ page, chat })
+  }, [])
+  const openChat = useCallback((id: string | null) => go('ask', id), [go])
+  // the Ask page names its chat once the first answer saved it: same entry in the history
+  const savedChat = useCallback((id: string | null) => go('ask', id, true), [go])
+  const page = route.page
 
   const out = async () => {
-    try { localStorage.removeItem(THREAD_KEY) } catch { /* storage off */ }   // the next person starts clean
     history.replaceState(null, '', location.pathname + location.search)
     await signOut()
   }
@@ -95,8 +115,8 @@ function Shell() {
           <Menu
             mode="inline"
             selectedKeys={[page]}
-            onClick={(e) => setPage(e.key as Page)}
-            style={{ borderInlineEnd: 0, flex: 1 }}
+            onClick={(e) => go(e.key as Page)}
+            style={{ borderInlineEnd: 0 }}
             items={[
               { key: 'ask', icon: <MessageOutlined />, label: 'Ask' },
               { key: 'explore', icon: <DashboardOutlined />, label: 'Explore' },
@@ -106,6 +126,8 @@ function Shell() {
               }] : []),
             ]}
           />
+          <Divider style={{ margin: 0 }} />
+          <ChatList current={page === 'ask' ? route.chat : null} onOpen={openChat} />
           <Divider style={{ margin: 0 }} />
           <Flex vertical gap="small" style={{ padding: token.padding }}>
             <ThemeSwitch block />
@@ -145,7 +167,7 @@ function Shell() {
               subTitle={<>{error} <Typography.Text code>filinglens serve</Typography.Text></>}
               extra={<Button type="primary" icon={<ReloadOutlined />} onClick={retry}>Try again</Button>}
             />
-          ) : page === 'ask' ? <AskPage /> : page === 'explore' ? <ExplorePage /> : isAdmin ? <AdminData /> : null}
+          ) : page === 'ask' ? <AskPage chatId={route.chat} onChat={savedChat} /> : page === 'explore' ? <ExplorePage /> : isAdmin ? <AdminData /> : null}
         </Layout.Content>
       </Layout>
     </Layout>
