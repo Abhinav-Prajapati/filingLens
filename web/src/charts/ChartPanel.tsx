@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { EChartsOption } from 'echarts'
-import { Segmented } from 'antd'
+import { Card, Flex, Grid, Segmented, Typography, theme } from 'antd'
 import {
   BarChartOutlined, BarsOutlined, FundOutlined, HeatMapOutlined, LineChartOutlined, NodeIndexOutlined, PieChartOutlined, RiseOutlined, StockOutlined,
 } from '@ant-design/icons'
@@ -32,10 +32,11 @@ const VIEW_META: Record<ViewId, { label: string; icon: React.ReactNode }> = {
 /** Plotted series of a data view, each with its fixed entity colour. */
 export function seriesOf(d: DataView, t: Tokens, label: (k: string) => string): S[] {
   if (!d.chart) return []
+  const cos = d.chart.series.flatMap((s) => (s.ticker && (s.key === 'value' || s.key === s.ticker) ? [s.ticker] : []))
   return d.chart.series.map((s, i) => ({
     key: s.key,
     label: s.key === 'value' ? (s.ticker ?? s.label) : s.ticker && s.key === s.ticker ? s.ticker : label(s.key) || s.label,
-    color: seriesColor(t, s.key === 'value' || s.key === s.ticker ? s.ticker : null, i),
+    color: seriesColor(t, s.key === 'value' || s.key === s.ticker ? s.ticker : null, i, cos),
     points: s.points,
   }))
 }
@@ -145,8 +146,8 @@ function build(view: ViewId, d: DataView, series: S[], t: Tokens): { option: ECh
       const total = items.reduce((a, i) => a + i.value, 0)
       return {
         option: donutOption(t, items, unit === '% of total'
-          ? { value: periods[0] ?? '', label: 'SHARE OF TOTAL' }
-          : { value: fmtCompact(total, unit), label: `COMBINED ${periods[0] ?? ''}` }),
+          ? { value: periods[0] ?? '', label: 'Share of total' }
+          : { value: fmtCompact(total, unit), label: `Combined ${periods[0] ?? ''}` }),
         caption: 'Each company’s share of the combined total', legend: true, height: 280,
       }
     }
@@ -155,6 +156,8 @@ function build(view: ViewId, d: DataView, series: S[], t: Tokens): { option: ECh
 
 export function ChartPanel({ data, initial, title, bare }: { data: DataView; initial?: ViewId; title?: string; bare?: boolean }) {
   const t = useTokens()
+  const { token } = theme.useToken()
+  const wide = Grid.useBreakpoint().md
   const { metricLabel } = useMeta()
   const series = useMemo(() => seriesOf(data, t, metricLabel), [data, t, metricLabel])
   const p = useMemo(() => plan(data, series), [data, series])
@@ -172,15 +175,25 @@ export function ChartPanel({ data, initial, title, bare }: { data: DataView; ini
       aria-label="Chart type"
     />
   )
-  return (
-    <div className={bare ? '' : 'chart-box'}>
-      <div className="chart-head" style={bare ? { justifyContent: 'flex-end' } : undefined}>
-        {!bare && <div className="chart-title">{y}<small>{unitLabel(data.unit)}</small></div>}
-        {switcher}
-      </div>
-      {built.legend && <Legend items={series.map((s) => ({ label: s.label, color: s.color }))} line={active === 'line' || active === 'indexed' || active === 'slope'} />}
+  const body = (
+    <Flex vertical gap="small">
+      {!wide && switcher && <div style={{ overflowX: 'auto' }}>{switcher}</div>}
+      {built.legend && <Legend items={series.map((s) => ({ label: s.label, color: s.color }))} />}
       <EChart option={built.option} height={built.height} label={`${y}: ${VIEW_META[active].label} chart. The table below has every value.`} />
-      <div className="caption">{built.caption}</div>
-    </div>
+      <Typography.Text type="secondary" style={{ fontSize: token.fontSizeSM }}>{built.caption}</Typography.Text>
+    </Flex>
+  )
+  if (bare) {
+    return <Flex vertical gap="small">{wide && switcher && <Flex justify="flex-end">{switcher}</Flex>}{body}</Flex>
+  }
+  return (
+    <Card
+      size="small"
+      title={<Flex vertical><Typography.Text strong>{y}</Typography.Text><Typography.Text type="secondary" style={{ fontSize: token.fontSizeSM, fontWeight: 400 }}>{unitLabel(data.unit)}</Typography.Text></Flex>}
+      extra={wide ? switcher : undefined}
+      styles={{ header: { paddingBlock: token.paddingXS } }}
+    >
+      {body}
+    </Card>
   )
 }

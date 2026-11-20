@@ -1,19 +1,20 @@
 import { useEffect, useState } from 'react'
-import { Tag } from 'antd'
+import { Card, Col, Flex, Row, Statistic, Tag, Typography, theme } from 'antd'
 import { TrophyOutlined } from '@ant-design/icons'
 import { api, type DataView, type Stat } from '../lib/api'
-import { fmtValue, isPctUnit, isPerShare, unitLabel } from '../lib/format'
+import { isPctUnit, isPerShare, unitLabel } from '../lib/format'
 import { useMeta } from '../lib/meta'
 import { seriesColor, useTokens } from '../lib/theme'
 import { EChart } from '../charts/EChart'
 import { rankedOption, sparkOption } from '../charts/options'
-import { CountUp, Delta } from './bits'
+import { Delta } from './bits'
 
 interface Args { ticker?: string; metric?: string; fy?: string; quarter?: string | null }
 
-/** One number, large, with context fetched around it: its own history and where peers stand. */
+/** One figure, with context fetched around it: its own history and where peers stand. */
 export function ValueHero({ stat, args, goodWhenUp }: { stat: Stat; args: Args; goodWhenUp: boolean }) {
   const t = useTokens()
+  const { token } = theme.useToken()
   const { loaded, metricLabel, companyName } = useMeta()
   const [trend, setTrend] = useState<DataView | null>(null)
   const [peers, setPeers] = useState<DataView | null>(null)
@@ -44,53 +45,53 @@ export function ValueHero({ stat, args, goodWhenUp }: { stat: Stat; args: Args; 
     : null
   const peerRow = peers?.table?.rows[0]
   const peerItems = peerRow
-    ? loaded.map((c) => ({ label: c.ticker, value: (peerRow[c.ticker] as number | null) ?? null, color: seriesColor(t, c.ticker, 0), highlight: c.ticker === ticker }))
+    ? loaded.map((c) => ({ label: c.ticker, value: (peerRow[c.ticker] as number | null) ?? null, color: c.ticker === ticker ? color : t.muted, highlight: c.ticker === ticker }))
         .filter((p) => p.value != null)
     : []
   const rank = peerItems.length > 1 ? [...peerItems].sort((a, b) => (b.value as number) - (a.value as number)).findIndex((p) => p.highlight) + 1 : 0
 
-  const v = stat.value ?? 0
+  const v = stat.value
   const pct = isPctUnit(unit)
   const per = isPerShare(unit)
-  const fmtHero = (x: number) => (pct ? x.toFixed(2) : per ? x.toFixed(2) : new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(x))
 
   return (
-    <div className="hero">
-      <div className="hero-fig">
-        <div className="eyebrow">{companyName(ticker)} · {period}</div>
-        <div style={{ fontSize: 14, color: 'var(--ink-2)', marginTop: 2 }}>{metricLabel(metric)}</div>
-        <div className="hero-num num" aria-label={fmtValue(stat.value, unit)}>
-          {!pct && <span className="cur">₹</span>}
-          {stat.value == null ? '–' : <CountUp value={v} format={fmtHero} duration={1.3} />}
-          {pct && <span className="cur" style={{ marginLeft: 4, marginRight: 0 }}>%</span>}
-        </div>
-        <div className="hero-unit">
-          {pct ? (metric.includes('margin') || metric.includes('ratio') ? 'of revenue' : '') : unitLabel(unit)}
-          {!pct && !per && v >= 1e5 ? ` · ₹${(v / 1e5).toFixed(2)} lakh crore` : ''}
-        </div>
-        <div className="hero-meta">
-          {change != null && prevPt && (
-            <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-              <Delta value={change} unit={pct ? 'pp' : '%'} goodWhenUp={goodWhenUp} /> vs {prevPt.period}
-            </span>
+    <Row gutter={[16, 16]}>
+      <Col xs={24} lg={10}>
+        <Card style={{ height: '100%' }}>
+          <Statistic
+            title={`${companyName(ticker)} · ${metricLabel(metric)} · ${period}`}
+            value={v ?? '–'}
+            precision={pct || per ? 2 : 0}
+            prefix={!pct && v != null ? '₹' : undefined}
+            suffix={pct ? '%' : per ? 'per share' : 'crore'}
+            groupSeparator=","
+          />
+          <Typography.Text type="secondary">
+            {pct ? (metric.includes('margin') || metric.includes('ratio') ? 'of revenue' : '') : unitLabel(unit)}
+            {!pct && !per && v != null && v >= 1e5 ? ` · ₹${(v / 1e5).toFixed(2)} lakh crore` : ''}
+          </Typography.Text>
+          <Flex gap="small" wrap align="center" style={{ marginTop: token.marginMD }}>
+            {change != null && prevPt && (
+              <Typography.Text type="secondary"><Delta value={change} unit={pct ? 'pp' : '%'} goodWhenUp={goodWhenUp} /> vs {prevPt.period}</Typography.Text>
+            )}
+            {rank > 0 && <Tag icon={<TrophyOutlined />} style={{ margin: 0 }}>#{rank} of {peerItems.length} covered companies</Tag>}
+          </Flex>
+        </Card>
+      </Col>
+      <Col xs={24} lg={14}>
+        <Flex vertical gap="middle" style={{ height: '100%' }}>
+          <Card size="small" title={`History${quarterly ? ' · quarterly' : ''}`}>
+            {pts.length > 1
+              ? <EChart size="sm" option={sparkOption(t, pts, color, unit, period)} label={`${ticker} ${metricLabel(metric)} history`} />
+              : <Typography.Text type="secondary">No earlier periods filed.</Typography.Text>}
+          </Card>
+          {peerItems.length > 1 && (
+            <Card size="small" title={`Peers · ${fy}`}>
+              <EChart option={rankedOption(t, peerItems, unit)} height={peerItems.length * 32 + 16} label={`${metricLabel(metric)} across covered companies, ${fy}`} />
+            </Card>
           )}
-          {rank > 0 && <Tag icon={<TrophyOutlined />} variant="outlined" style={{ margin: 0 }}>#{rank} of {peerItems.length} covered companies</Tag>}
-        </div>
-      </div>
-      <div className="hero-ctx">
-        <div className="chart-box">
-          <div className="eyebrow">History{quarterly ? ' · quarterly' : ''}</div>
-          {pts.length > 1
-            ? <EChart size="sm" option={sparkOption(t, pts, color, unit, period)} label={`${ticker} ${metricLabel(metric)} history`} />
-            : <div className="chart sm" />}
-        </div>
-        {peerItems.length > 1 && (
-          <div className="chart-box">
-            <div className="eyebrow">Peers · {fy}</div>
-            <EChart option={rankedOption(t, peerItems, unit)} height={peerItems.length * 34 + 12} label={`${metricLabel(metric)} across covered companies, ${fy}`} />
-          </div>
-        )}
-      </div>
-    </div>
+        </Flex>
+      </Col>
+    </Row>
   )
 }

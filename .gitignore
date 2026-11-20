@@ -7,3 +7,5 @@ work/
 *.db
 *.pdf
 .env
+
+.venv/*

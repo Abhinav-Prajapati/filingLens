@@ -58,6 +58,7 @@ export interface EmbedJob {
   state: 'loading' | 'running' | 'done' | 'stopped' | 'failed'; device: string | null; model: string | null
   items: EmbedItem[]; embedded: number; message: string; error: string | null
   started_at: string; finished_at: string | null; stop_requested: boolean
+  llm_paused: boolean                   // the chat model is unloaded while this GPU job runs
 }
 export type JobStage = 'queued' | 'listing' | 'downloading' | 'ingesting' | 'done' | 'failed'
 export interface Job {

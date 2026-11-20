@@ -69,6 +69,8 @@ def test_parse_text_call_none_for_plain_text():
 
 # ---- validation -----------------------------------------------------------------------------------
 def test_validation_normalises_and_explains():
+    # Explore compares up to 8 companies (one colour each), so the cap is 8, not 5
+    assert len(validate_call("compare", {"tickers": ["TCS"] * 8, "metrics": ["revenue"]}, REG).tickers) == 8
     a = validate_call("get_value", {"ticker": "Infosys", "metric": "profit", "fy": "2023-24"}, REG)
     assert (a.ticker, a.metric, a.fy) == ("INFY", "net_profit", "FY24")
     assert validate_call("get_trend", {"ticker": "hul", "metric": "Net Margin",
@@ -79,6 +81,7 @@ def test_validation_normalises_and_explains():
         ("get_value", {"ticker": "TCS", "metric": "revenue", "fy": "next year"}, "bad fiscal year"),
         ("compare", {"tickers": ["TCS", "INFY"], "metrics": ["revenue", "net_profit"]}, "ONE"),
         ("delete_all", {}, "unknown tool"),
+        ("compare", {"tickers": ["TCS"] * 9, "metrics": ["revenue"]}, "at most 8"),
     ]:
         with pytest.raises(ValueError, match=msg):
             validate_call(name, args, REG)

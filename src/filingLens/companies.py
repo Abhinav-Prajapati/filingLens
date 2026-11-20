@@ -99,6 +99,14 @@ def add_companies(listed: list[ListedCompany], overlay: Path | None = None,
 
 
 # ---- companies named in a question that are not loaded ----------------------------------------
+# ordinary words that begin some company names ("International Conveyors", "North Eastern
+# Carrying"); on their own they never name a company
+GENERIC = frozenset("""
+international national global general united universal standard central federal north south
+east west northern southern eastern western indian india asian american new modern first great
+royal premier prime super smart future golden best top super national
+""".split())
+
 _LEGAL = {"limited", "ltd", "the", "and", "&", "of", "co", "company", "corporation", "corp"}
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9&\-]*")
 
@@ -149,7 +157,11 @@ class CompanyGuard:
             if two and not (w in self.ignore and nxt in self.ignore):
                 hits = self._uncovered(two)
                 used.add(i + 1)
-            elif names and w not in self.ignore and len(w) >= 3 and tok[0].isupper():
+            elif (names and w not in self.ignore and w not in GENERIC and len(w) >= 3
+                  and tok[0].isupper() and not (nxt and toks[i + 1][0].isupper())):
+                # a lone capitalised word ("Reliance"); not when it starts a different proper
+                # noun ("International Business", "North America"), which the two-word rule
+                # above would have matched if it were the company's name
                 hits = self._uncovered([c for _, c in names])
             elif tok.isupper() and tok in self.by_symbol and w not in self.ignore:
                 hits = self._uncovered([self.by_symbol[tok]])

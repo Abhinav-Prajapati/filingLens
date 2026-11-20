@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { motion } from 'motion/react'
-import { Alert, Button, Card, Form, Input, Tag } from 'antd'
 import {
-  ArrowLeftOutlined, ArrowRightOutlined, FileSearchOutlined, LockOutlined, MailOutlined, SafetyCertificateOutlined,
-  StockOutlined, TranslationOutlined,
+  Alert, Avatar, Button, Card, Col, Divider, Flex, Form, Input, Layout, Row, Space, Statistic, Typography, theme,
+} from 'antd'
+import {
+  ArrowLeftOutlined, FileSearchOutlined, LockOutlined, MailOutlined, SafetyCertificateOutlined, StockOutlined,
+  TranslationOutlined,
 } from '@ant-design/icons'
 import { api, type Health } from '../lib/api'
 import { useAuth } from '../lib/auth'
@@ -18,7 +19,7 @@ const FEATURES = [
   },
   {
     icon: <StockOutlined />, title: 'Compare and chart',
-    text: 'Trends, peers, margins and cost structure, as animated charts and sortable tables, with growth and CAGR worked out.',
+    text: 'Trends, peers, margins and cost structure as charts and sortable tables, with growth and CAGR worked out.',
   },
   {
     icon: <FileSearchOutlined />, title: 'Search the annual reports',
@@ -32,6 +33,7 @@ const FEATURES = [
 
 /** Signed-out part of the app: the home page and the sign-in / sign-up forms. */
 export function Welcome() {
+  const { token } = theme.useToken()
   const [view, setView] = useState<PublicView>(() => viewFromHash())
   useEffect(() => {
     const on = () => setView(viewFromHash())
@@ -41,20 +43,29 @@ export function Welcome() {
   const go = (v: PublicView) => { location.hash = v === 'home' ? '' : v; setView(v) }
 
   return (
-    <div className="welcome">
-      <header className="welcome-bar">
-        <a href="#" onClick={(e) => { e.preventDefault(); go('home') }} aria-label="filingLens home"><Brand sub={null} /></a>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <ThemeSwitch />
-          {view !== 'login' && <Button type="text" onClick={() => go('login')}>Sign in</Button>}
-          {view !== 'register' && <Button type="primary" onClick={() => go('register')}>Create account</Button>}
-        </div>
-      </header>
-      <motion.main key={view} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
+    <Layout style={{ minHeight: '100vh' }}>
+      <Layout.Header
+        style={{
+          background: token.colorBgContainer, borderBottom: `1px solid ${token.colorSplit}`,
+          paddingInline: token.paddingLG, position: 'sticky', top: 0, zIndex: 10,
+        }}
+      >
+        <Flex align="center" justify="space-between" style={{ height: '100%' }}>
+          <Typography.Link onClick={() => go('home')} aria-label="filingLens home"><Brand sub={null} /></Typography.Link>
+          <Space>
+            <ThemeSwitch />
+            {view !== 'login' && <Button onClick={() => go('login')}>Sign in</Button>}
+            {view !== 'register' && <Button type="primary" onClick={() => go('register')}>Create account</Button>}
+          </Space>
+        </Flex>
+      </Layout.Header>
+      <Layout.Content style={{ padding: token.paddingLG }}>
         {view === 'home' ? <Home go={go} /> : <AuthForm mode={view} go={go} />}
-      </motion.main>
-      <footer className="welcome-foot">filingLens · figures from NSE filings and company annual reports</footer>
-    </div>
+      </Layout.Content>
+      <Layout.Footer style={{ textAlign: 'center' }}>
+        <Typography.Text type="secondary">filingLens · figures from NSE filings and company annual reports</Typography.Text>
+      </Layout.Footer>
+    </Layout>
   )
 }
 
@@ -64,49 +75,54 @@ function viewFromHash(): PublicView {
 }
 
 function Home({ go }: { go: (v: PublicView) => void }) {
+  const { token } = theme.useToken()
   const [health, setHealth] = useState<Health | null>(null)
   useEffect(() => { api.health().then(setHealth).catch(() => {}) }, [])
   return (
-    <div className="home">
-      <section className="home-hero">
-        <Tag color="gold" variant="outlined" style={{ fontFamily: 'var(--mono)', letterSpacing: '0.06em' }}>RESEARCH DESK</Tag>
-        <h2>Indian company financials, <em>checked against the filings.</em></h2>
-        <p className="intro-lede">
-          Ask about revenue, margins, growth or what an annual report says, and get the figures as filed,
-          with charts, tables and the page every number came from.
-        </p>
-        <div className="home-cta">
-          <Button type="primary" size="large" onClick={() => go('register')} icon={<ArrowRightOutlined />} iconPlacement="end">
-            Create a free account
-          </Button>
+    <Flex vertical gap="large" style={{ maxWidth: 1200, margin: '0 auto', paddingBlock: token.paddingXL }}>
+      <Flex vertical gap="middle" style={{ maxWidth: 720 }}>
+        <Typography.Title style={{ margin: 0 }}>Indian company financials, checked against the filings</Typography.Title>
+        <Typography.Paragraph type="secondary" style={{ fontSize: token.fontSizeLG, margin: 0 }}>
+          Ask about revenue, margins, growth or what an annual report says, and get the figures as filed, with charts,
+          tables and the page every number came from.
+        </Typography.Paragraph>
+        <Space>
+          <Button type="primary" size="large" onClick={() => go('register')}>Create a free account</Button>
           <Button size="large" onClick={() => go('login')}>Sign in</Button>
-        </div>
-        {health && (
-          <div className="home-facts">
-            <span><b className="num">{health.companies_with_data}</b> companies loaded</span>
-            <span><b className="num">{health.facts.toLocaleString('en-IN')}</b> filed facts</span>
-            <span><b className="num">{health.chunks.toLocaleString('en-IN')}</b> report passages</span>
-          </div>
-        )}
-      </section>
-      <section className="home-features" aria-label="What filingLens does">
-        {FEATURES.map((f, i) => (
-          <motion.div key={f.title} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 * i + 0.1 }}>
-            <Card className="home-feature">
-              <span className="prompt-icon">{f.icon}</span>
-              <h3>{f.title}</h3>
-              <p>{f.text}</p>
+        </Space>
+      </Flex>
+
+      {health && (
+        <Card>
+          <Row gutter={[24, 16]}>
+            <Col xs={24} sm={8}><Statistic title="Companies loaded" value={health.companies_with_data} /></Col>
+            <Col xs={24} sm={8}><Statistic title="Filed facts" value={health.facts} /></Col>
+            <Col xs={24} sm={8}><Statistic title="Report passages" value={health.chunks} /></Col>
+          </Row>
+        </Card>
+      )}
+
+      <Row gutter={[16, 16]}>
+        {FEATURES.map((f) => (
+          <Col key={f.title} xs={24} sm={12} lg={6}>
+            <Card style={{ height: '100%' }}>
+              <Card.Meta
+                avatar={<Avatar icon={f.icon} style={{ background: token.colorPrimaryBg, color: token.colorPrimary }} />}
+                title={f.title}
+                description={f.text}
+              />
             </Card>
-          </motion.div>
+          </Col>
         ))}
-      </section>
-    </div>
+      </Row>
+    </Flex>
   )
 }
 
 interface Fields { email: string; password: string; confirm?: string }
 
 function AuthForm({ mode, go }: { mode: 'login' | 'register'; go: (v: PublicView) => void }) {
+  const { token } = theme.useToken()
   const { signIn, signUp } = useAuth()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -124,16 +140,18 @@ function AuthForm({ mode, go }: { mode: 'login' | 'register'; go: (v: PublicView
   }
 
   return (
-    <div className="auth-wrap">
-      <Card className="auth-card" styles={{ body: { padding: 28 } }}>
-        <Button type="link" size="small" icon={<ArrowLeftOutlined />} onClick={() => go('home')} style={{ paddingInline: 0, marginBottom: 12 }}>
+    <Flex justify="center" style={{ paddingBlock: token.paddingXL }}>
+      <Card style={{ width: '100%', maxWidth: 400 }}>
+        <Button type="link" icon={<ArrowLeftOutlined />} onClick={() => go('home')} style={{ paddingInline: 0 }}>
           Home
         </Button>
-        <h2 className="auth-title">{signUpMode ? 'Create your account' : 'Welcome back'}</h2>
-        <p className="muted" style={{ margin: '4px 0 22px' }}>
-          {signUpMode ? 'It takes a few seconds. You can start asking straight after.' : 'Sign in to ask questions and explore the data.'}
-        </p>
-        {error && <Alert type="error" showIcon title={error} style={{ marginBottom: 16 }} />}
+        <Typography.Title level={3} style={{ marginTop: token.marginXS }}>
+          {signUpMode ? 'Create your account' : 'Sign in'}
+        </Typography.Title>
+        <Typography.Paragraph type="secondary">
+          {signUpMode ? 'It takes a few seconds; you can start asking straight after.' : 'Sign in to ask questions and explore the data.'}
+        </Typography.Paragraph>
+        {error && <Alert type="error" showIcon title={error} style={{ marginBottom: token.marginMD }} />}
         <Form<Fields> layout="vertical" requiredMark={false} onFinish={submit} disabled={busy} key={mode}>
           <Form.Item name="email" label="Email" rules={[{ required: true, message: 'Enter your email' }, { type: 'email', message: 'That is not a valid email address' }]}>
             <Input prefix={<MailOutlined />} autoComplete="email" autoFocus placeholder="you@example.com" />
@@ -161,17 +179,15 @@ function AuthForm({ mode, go }: { mode: 'login' | 'register'; go: (v: PublicView
               <Input.Password prefix={<LockOutlined />} autoComplete="new-password" />
             </Form.Item>
           )}
-          <Button type="primary" htmlType="submit" block size="large" loading={busy} style={{ marginTop: 4 }}>
+          <Button type="primary" htmlType="submit" block loading={busy}>
             {signUpMode ? 'Create account' : 'Sign in'}
           </Button>
         </Form>
-        <p className="auth-switch">
-          {signUpMode ? 'Already have an account?' : 'New to filingLens?'}{' '}
-          <Button type="link" size="small" style={{ padding: 0 }} onClick={() => go(signUpMode ? 'login' : 'register')}>
-            {signUpMode ? 'Sign in' : 'Create an account'}
-          </Button>
-        </p>
+        <Divider plain>{signUpMode ? 'Already have an account?' : 'New to filingLens?'}</Divider>
+        <Button block onClick={() => go(signUpMode ? 'login' : 'register')}>
+          {signUpMode ? 'Sign in' : 'Create an account'}
+        </Button>
       </Card>
-    </div>
+    </Flex>
   )
 }

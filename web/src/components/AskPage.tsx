@@ -1,22 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'motion/react'
-import { Alert, Button, Card, Input, Skeleton, Statistic, Steps, Switch, Tag, Tooltip, type InputRef } from 'antd'
 import {
-  ArrowUpOutlined, BarChartOutlined, FileSearchOutlined, LineChartOutlined, NumberOutlined, PieChartOutlined, RadarChartOutlined,
-  RobotOutlined, SwapOutlined, TranslationOutlined,
+  Alert, Button, Card, Col, Flex, Input, Popconfirm, Row, Skeleton, Space, Statistic, Steps, Switch, Tag, Tooltip, Typography,
+  theme, type InputRef,
+} from 'antd'
+import {
+  BarChartOutlined, DeleteOutlined, FileSearchOutlined, LineChartOutlined, NumberOutlined, PieChartOutlined,
+  RadarChartOutlined, SendOutlined, SwapOutlined, TranslationOutlined,
 } from '@ant-design/icons'
 import { api, ApiError, type AnswerView } from '../lib/api'
 import { useMeta } from '../lib/meta'
 import { AnswerCard } from './AnswerCard'
+import { PageHeader } from './Chrome'
 
 interface Turn { id: string; question: string; useLlm: boolean; answer?: AnswerView; error?: string }
 
 const PROMPTS = [
-  { q: 'Compare revenue of TCS, Infosys and HUL over the last 4 years', k: 'Compare · slope · heatmap', icon: <SwapOutlined /> },
-  { q: 'How has TCS net profit margin changed from FY23 to FY26?', k: 'Margin trend', icon: <LineChartOutlined /> },
+  { q: 'Compare revenue of TCS, Infosys and HUL over the last 4 years', k: 'Comparison', icon: <SwapOutlined /> },
+  { q: 'How has TCS net profit margin changed from FY23 to FY26?', k: 'Trend', icon: <LineChartOutlined /> },
   { q: 'Show Infosys quarterly net profit trend', k: 'Quarterly', icon: <BarChartOutlined /> },
-  { q: 'What was Hindustan Unilever\'s effective tax rate in FY25?', k: 'Figure · peers', icon: <NumberOutlined /> },
-  { q: 'Compare total assets of TCS, Infosys and HUL in FY26', k: 'Ranked · share', icon: <PieChartOutlined /> },
+  { q: 'What was Hindustan Unilever\'s effective tax rate in FY25?', k: 'Figure', icon: <NumberOutlined /> },
+  { q: 'Compare total assets of TCS, Infosys and HUL in FY26', k: 'Share', icon: <PieChartOutlined /> },
   { q: 'Compare employee cost ratio of TCS and Infosys in FY26', k: 'Cost structure', icon: <RadarChartOutlined /> },
   { q: 'Infosys ka diluted EPS FY23 se FY26 tak kaise badla?', k: 'Hinglish', icon: <TranslationOutlined /> },
   { q: 'What are the key risks Infosys mentions in its annual report?', k: 'Report search', icon: <FileSearchOutlined /> },
@@ -28,17 +31,17 @@ const load = (): Turn[] => {
 }
 
 export function AskPage() {
+  const { token } = theme.useToken()
   const { health, loaded, companies } = useMeta()
   const [turns, setTurns] = useState<Turn[]>(load)
   const [q, setQ] = useState('')
   const [useLlm, setUseLlmState] = useState(() => {
     try { return localStorage.getItem('filinglens.llm') === '1' } catch { return false }
   })
-  const setUseLlm = (f: (v: boolean) => boolean) => setUseLlmState((v) => {
-    const n = f(v)
-    try { localStorage.setItem('filinglens.llm', n ? '1' : '0') } catch { /* storage off */ }
-    return n
-  })
+  const setUseLlm = (v: boolean) => {
+    setUseLlmState(v)
+    try { localStorage.setItem('filinglens.llm', v ? '1' : '0') } catch { /* storage off */ }
+  }
   const busy = turns.some((t) => !t.answer && !t.error)
   const input = useRef<InputRef>(null)
   const end = useRef<HTMLDivElement>(null)
@@ -54,8 +57,7 @@ export function AskPage() {
     const q0 = params.get('q')
     if (!q0) return
     history.replaceState(null, '', location.pathname + location.hash)
-    const llm = params.get('llm') === '1' && llmAvailable
-    void askWith(q0, llm)
+    void askWith(q0, params.get('llm') === '1' && llmAvailable)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   useEffect(() => {
@@ -86,105 +88,123 @@ export function AskPage() {
     }
   }
 
+  const clear = () => {
+    try { localStorage.removeItem(THREAD_KEY) } catch { /* storage off */ }
+    setTurns([])
+  }
+
   const fys = [...new Set(loaded.flatMap((c) => c.fys))].sort()
   const reports = loaded.reduce((n, c) => n + c.annual_reports.length, 0)
 
   return (
-    <>
-      <div className="page thread" style={{ width: '100%' }}>
+    <Flex vertical style={{ maxWidth: 1120, margin: '0 auto', minHeight: `calc(100vh - ${token.paddingLG * 2}px)` }}>
+      <PageHeader
+        title="Ask"
+        description="Questions in English or Hinglish, answered from filed figures and annual reports"
+        extra={
+          <Space size="middle">
+            <Tooltip title={llmAvailable ? `Model: ${health?.llm}` : 'No LLM configured: questions are understood by rules'}>
+              <Space size="small">
+                <Switch checked={useLlm && llmAvailable} disabled={!llmAvailable} onChange={setUseLlm} aria-label="Use the LLM" />
+                <Typography.Text>LLM</Typography.Text>
+              </Space>
+            </Tooltip>
+            <Popconfirm title="Clear the conversation?" okText="Clear" cancelText="Keep" onConfirm={clear} disabled={!turns.length}>
+              <Button icon={<DeleteOutlined />} disabled={!turns.length}>Clear</Button>
+            </Popconfirm>
+          </Space>
+        }
+      />
+
+      <Flex vertical gap="large" style={{ flex: 1 }}>
         {turns.length === 0 && (
-          <motion.section className="intro" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
-            <Tag variant="outlined" color="gold" style={{ fontFamily: 'var(--mono)', fontSize: 11, letterSpacing: '0.06em' }}>RESEARCH DESK</Tag>
-            <h2>Ask about the filings.<br /><span>Get the figures, <em>charted and sourced.</em></span></h2>
-            <p className="intro-lede">
-              Every number comes from the XBRL results and annual reports, never from the model. Ask in English or Hinglish;
-              each answer carries its page references, and a figure that was not filed stays blank instead of being estimated.
-            </p>
-            <div className="intro-facts">
-              <Statistic title="Companies loaded" value={loaded.length} suffix={<span className="muted" style={{ fontSize: 13 }}>of {companies.length}</span>} />
-              <Statistic title="Fiscal years" value={fys.length ? `${fys[0]}–${fys[fys.length - 1]}` : '–'} />
-              <Statistic title="Filed facts" value={health?.facts ?? 0} formatter={(v) => Number(v).toLocaleString('en-IN')} />
-              <Statistic title="Report passages" value={health?.chunks ?? 0} formatter={(v) => Number(v).toLocaleString('en-IN')} suffix={<span className="muted" style={{ fontSize: 13 }}>{reports} reports</span>} />
-            </div>
-            <div className="eyebrow" style={{ marginBottom: 10 }}>Try one</div>
-            <div className="prompt-grid">
-              {PROMPTS.map((p, i) => (
-                <motion.div key={p.q} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 + i * 0.04 }}>
-                  <Card
-                    hoverable size="small" className="prompt-card" role="button" tabIndex={0}
-                    onClick={() => ask(p.q)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ask(p.q) } }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span className="prompt-icon">{p.icon}</span>
-                      <span className="eyebrow" style={{ fontSize: 10 }}>{p.k}</span>
-                    </div>
-                    <span className="prompt-q">{p.q}</span>
-                  </Card>
-                </motion.div>
+          <>
+            <Card>
+              <Row gutter={[24, 16]}>
+                <Col xs={12} md={6}><Statistic title="Companies loaded" value={loaded.length} suffix={`/ ${companies.length}`} /></Col>
+                <Col xs={12} md={6}><Statistic title="Fiscal years" value={fys.length ? `${fys[0]}–${fys[fys.length - 1]}` : '–'} /></Col>
+                <Col xs={12} md={6}><Statistic title="Filed facts" value={health?.facts ?? 0} /></Col>
+                <Col xs={12} md={6}><Statistic title="Report passages" value={health?.chunks ?? 0} suffix={<Typography.Text type="secondary">· {reports} reports</Typography.Text>} /></Col>
+              </Row>
+            </Card>
+            <Card title="Suggested questions">
+              {PROMPTS.map((p) => (
+                <Card.Grid
+                  key={p.q}
+                  style={{ width: '25%', minWidth: 220, cursor: 'pointer' }}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => ask(p.q)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ask(p.q) } }}
+                >
+                  <Flex vertical gap="small">
+                    <Space size="small">
+                      <Typography.Text type="secondary">{p.icon}</Typography.Text>
+                      <Tag>{p.k}</Tag>
+                    </Space>
+                    <Typography.Text>{p.q}</Typography.Text>
+                  </Flex>
+                </Card.Grid>
               ))}
-            </div>
-          </motion.section>
+            </Card>
+          </>
         )}
-        <AnimatePresence initial={false}>
-          {turns.map((t) => (
-            <motion.div key={t.id} className="turn" layout="position" initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-              <div className="qrow"><div className="qbubble">{t.question}</div></div>
-              {t.answer ? <AnswerCard a={t.answer} /> : t.error
-                ? <Alert type="error" showIcon title={t.error} />
-                : <Pending llm={t.useLlm} onStop={() => abort.current?.abort()} />}
-            </motion.div>
-          ))}
-        </AnimatePresence>
+
+        {turns.map((t) => (
+          <Flex key={t.id} vertical gap="middle">
+            <Flex justify="flex-end">
+              <Card size="small" style={{ maxWidth: '80%', background: token.colorPrimaryBg, borderColor: token.colorPrimaryBorder }}>
+                <Typography.Text>{t.question}</Typography.Text>
+              </Card>
+            </Flex>
+            {t.answer ? <AnswerCard a={t.answer} /> : t.error
+              ? <Alert type="error" showIcon title={t.error} />
+              : <Pending llm={t.useLlm} onStop={() => abort.current?.abort()} />}
+          </Flex>
+        ))}
         <div ref={end} />
-      </div>
-      <div className="askbar-wrap">
-        <div className="page">
-          <form className="askbar" onSubmit={(e) => { e.preventDefault(); ask(q) }}>
+      </Flex>
+
+      <div style={{ position: 'sticky', bottom: 0, background: token.colorBgLayout, paddingBlock: token.padding, marginTop: token.marginLG }}>
+        <form onSubmit={(e) => { e.preventDefault(); ask(q) }}>
+          <Space.Compact block size="large">
             <Input
-              ref={input} value={q} onChange={(e) => setQ(e.target.value)} autoFocus variant="borderless"
+              ref={input} value={q} onChange={(e) => setQ(e.target.value)} autoFocus
               placeholder="e.g. TCS vs Infosys net margin last 3 years" aria-label="Ask a question"
             />
-            <Tooltip title={llmAvailable ? `Model: ${health?.llm}` : 'No LLM configured: questions are understood by rules'}>
-              <label className="llm">
-                <RobotOutlined />
-                <Switch size="small" checked={useLlm && llmAvailable} disabled={!llmAvailable} onChange={() => setUseLlm((v) => !v)} aria-label="Use the LLM" />
-              </label>
-            </Tooltip>
-            <Button type="primary" htmlType="submit" shape="circle" icon={<ArrowUpOutlined />} disabled={busy || q.trim().length < 2} aria-label="Ask" />
-          </form>
-          <div className="ask-hint">
-            <span>{useLlm && llmAvailable ? 'LLM reads the question and writes a summary; numbers still come from the database' : 'Rules mode: instant, no model involved'}</span>
-            <span className="mono">/ to focus</span>
-          </div>
-        </div>
+            <Button type="primary" htmlType="submit" icon={<SendOutlined />} disabled={busy || q.trim().length < 2}>Ask</Button>
+          </Space.Compact>
+        </form>
+        <Flex justify="space-between" style={{ marginTop: token.marginXS }}>
+          <Typography.Text type="secondary" style={{ fontSize: token.fontSizeSM }}>
+            {useLlm && llmAvailable ? 'The LLM reads the question and writes a summary; numbers still come from the filings.' : 'Rules mode: instant, no model involved.'}
+          </Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: token.fontSizeSM }}>Press <Typography.Text keyboard>/</Typography.Text> to focus</Typography.Text>
+        </Flex>
       </div>
-    </>
+    </Flex>
   )
 }
 
 function Pending({ llm, onStop }: { llm: boolean; onStop: () => void }) {
+  const { token } = theme.useToken()
   const [step, setStep] = useState(0)
   useEffect(() => {
     const ids = [setTimeout(() => setStep(1), 700), setTimeout(() => setStep(2), llm ? 2600 : 1600)]
     return () => ids.forEach(clearTimeout)
   }, [llm])
   return (
-    <Card size="small" styles={{ body: { padding: '16px 20px' } }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-        <Steps
-          size="small"
-          type="dot"
-          current={step}
-          style={{ flex: 1 }}
-          items={[
-            { title: 'Reading the question' },
-            { title: 'Fetching filed figures' },
-            { title: llm ? 'Writing the summary' : 'Laying out charts' },
-          ]}
-        />
-        <Button size="small" type="text" onClick={onStop}>Stop</Button>
-      </div>
-      <Skeleton active title={false} paragraph={{ rows: 3, width: ['92%', '78%', '55%'] }} style={{ marginTop: 16 }} />
+    <Card extra={<Button size="small" onClick={onStop}>Stop</Button>} title="Working on it">
+      <Steps
+        size="small"
+        current={step}
+        items={[
+          { title: 'Reading the question' },
+          { title: 'Fetching filed figures' },
+          { title: llm ? 'Writing the summary' : 'Laying out charts' },
+        ]}
+      />
+      <Skeleton active title={false} paragraph={{ rows: 3 }} style={{ marginTop: token.marginLG }} />
     </Card>
   )
 }

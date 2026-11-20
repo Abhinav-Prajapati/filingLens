@@ -8,9 +8,15 @@
 
 One job at a time, one report after another; the vector file is saved after each report, so a
 stopped or crashed job keeps what it finished and the next run continues from there. When the
-search model is already loaded (someone searched), it is reused rather than loaded twice: the
-GPU is small and shared with a local LLM server. "auto" uses the GPU and falls back to the CPU
-when the GPU is full. When the job ends the app reloads the index, so search uses it at once.
+job ends the app reloads the index, so search uses it at once.
+
+With the llama.cpp router (FILINGLENS_EMBED_URL; docker-compose.yml, service "llm"):
+  "cpu"          BGE-M3 on the CPU (the question-embedding preset); the chat model stays.
+  "auto"/"cuda"  BGE-M3 on the GPU: the chat model is unloaded first (4 GB of VRAM holds one),
+                 questions are answered without the LLM meanwhile ("LLM paused"), and the chat
+                 model is loaded again when the job ends, however it ends.
+Without it, BGE-M3 runs in-process (sentence-transformers); "auto" falls back to the CPU when
+the GPU is full, and an already loaded search model is reused.
 """
 from __future__ import annotations
 
@@ -24,7 +30,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from filingLens.retrieval.embedder import BGE_M3, Embedder
+from filingLens.llm.router import Router
+from filingLens.retrieval.embedder import BGE_M3, Embedder, http_embedder, target_index_name
 from filingLens.retrieval.index import VectorIndex, embed_documents, pending_by_document
 from filingLens.storage.db import connect
 
@@ -46,7 +53,8 @@ class EmbedItem(BaseModel):
 
 class EmbedJob(BaseModel):
     state: Literal["loading", "running", "done", "stopped", "failed"]
-    device: str | None = None            # where the model runs: cuda / cpu
+    device: str | None = None            # where the model runs: gpu / cuda / cpu
+    llm_paused: bool = False             # the chat model is unloaded while this job runs
     model: str | None = None
     items: list[EmbedItem]
     embedded: int = 0                    # passages embedded by this job
@@ -68,6 +76,10 @@ def _now() -> str:
 
 
 def index_model(st: State) -> str:
+    """The model new vectors are made with: the HTTP backend when one is configured, else the
+    existing index's model (BGE-M3 when there is none). A different model starts a new index."""
+    if http_embedder() is not None:
+        return target_index_name()
     idx = VectorIndex.load(st.vectors)
     return idx.model if idx is not None else BGE_M3
 
@@ -77,13 +89,21 @@ def default_embedder(model: str, device: Device) -> Embedder:
 
     if model.startswith("hash"):
         return HashEmbedder()
+    http = http_embedder(bulk=device != "cpu")
+    if http is not None:
+        return http
     return BgeM3Embedder(model=model, device=None if device == "auto" else device)
 
 
 class Embeddings:
     def __init__(self, st: State, lock: threading.Lock, database_url: str | None,
-                 factory: Callable[[str, Device], Embedder] = default_embedder):
+                 factory: Callable[[str, Device], Embedder] = default_embedder,
+                 router: Router | None = None, llm_model: str | None = None,
+                 bulk_model: str | None = None):
+        """``router``/``llm_model``/``bulk_model``: swap the chat model out for GPU jobs
+        (default from the environment when an embeddings server is configured)."""
         self.st, self.lock, self.database_url, self.factory = st, lock, database_url, factory
+        self.router, self.llm_model, self.bulk_model = router, llm_model, bulk_model
         self.job: EmbedJob | None = None
         self._guard = threading.Lock()
 
@@ -142,11 +162,40 @@ class Embeddings:
         dev = getattr(emb, "device", "cpu")
         return emb if device == "auto" or str(dev).startswith(device) else None
 
+    def _swap_in(self, job: EmbedJob) -> None:
+        """GPU job with the router: pause the LLM, unload it, load BGE-M3 on the GPU."""
+        assert self.router is not None and self.bulk_model is not None
+        job.llm_paused = True
+        self.st.llm_paused = "reports are being embedded on the GPU"
+        job.message = "Unloading the chat model, loading BGE-M3 on the GPU"
+        if self.llm_model:
+            self.router.unload(self.llm_model)
+            self.router.wait(self.llm_model, "unloaded", timeout=60)
+        self.router.load(self.bulk_model)
+        self.router.wait(self.bulk_model, "loaded")
+
+    def _swap_out(self, job: EmbedJob) -> None:
+        """Always after a GPU job: free the GPU, load the chat model again, unpause."""
+        try:
+            if self.router is not None and self.bulk_model is not None:
+                self.router.unload(self.bulk_model)
+                if self.llm_model:
+                    self.router.wait(self.bulk_model, "unloaded", timeout=60)
+                    self.router.load(self.llm_model)    # loads in the background
+        except Exception as e:                        # noqa: BLE001 - reported on the job
+            job.error = job.error or f"could not reload the chat model: {e}"
+        finally:
+            self.st.llm_paused = None
+            job.llm_paused = False
+
     def _run(self, job: EmbedJob, device: Device) -> None:
         con = None
         embedder: Embedder | None = None
+        gpu = device != "cpu" and self.router is not None and self.bulk_model is not None
         try:
             model = index_model(self.st)
+            if gpu:
+                self._swap_in(job)
             embedder = self._shared(model, device) or self.factory(model, device)
             job.model, job.device = embedder.name, str(getattr(embedder, "device", "cpu"))
             job.state = "running"
@@ -178,6 +227,8 @@ class Embeddings:
                     i.state = "failed"
             traceback.print_exc()
         finally:
+            if gpu:
+                self._swap_out(job)
             job.finished_at = _now()
             if con is not None:
                 con.close()
@@ -202,7 +253,16 @@ def add_embedding_routes(app: Any, require_admin: Any, st: State, lock: threadin
                          database_url: str | None = None,
                          factory: Callable[[str, Device], Embedder] | None = None) -> Embeddings:
     admin = [Depends(require_admin)]
-    emb = Embeddings(st, lock, database_url, factory or default_embedder)
+    router, llm_model, bulk_model = None, None, None
+    if http_embedder() is not None:
+        from filingLens.config import setting
+        from filingLens.llm.client import LLMConfig
+
+        router = Router.from_env()
+        llm_model = LLMConfig.from_env().model or None
+        bulk_model = setting("FILINGLENS_EMBED_BULK_MODEL", "bge-m3-gpu")
+    emb = Embeddings(st, lock, database_url, factory or default_embedder, router, llm_model,
+                     bulk_model)
 
     @app.get("/admin/embeddings", response_model=EmbedJob | None, dependencies=admin,
              tags=["admin"])

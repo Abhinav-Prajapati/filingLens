@@ -16,27 +16,46 @@ Facts come from a verified database (XBRL), never from an LLM. See the V1 build 
 
 ## Running with Docker
 
-Four services (`docker-compose.yml`), every port on 127.0.0.1:
+Five services (`docker-compose.yml`), every port on 127.0.0.1:
 
 | service | what | port |
 |---|---|---|
 | `postgres` | all data: figures, report text and its keyword index, accounts | 5442 |
 | `seaweedfs` | S3-compatible store for downloaded filings (bucket `filinglens`) | 8333 (S3 API) |
 | `s3manager` | small web UI to browse and download the bucket's files | http://127.0.0.1:8090 |
-| `app` | the API and web UI (GPU for BGE-M3; host network, so a local llama-server works as configured) | http://127.0.0.1:8765 |
+| `llm` | llama.cpp router (CUDA): the chat model and BGE-M3 embeddings, presets in `llm/models.ini` | 8081 (`/v1`) |
+| `app` | the API and web UI; no GPU and no PyTorch (~1 GB image, a code change rebuilds in seconds) | http://127.0.0.1:8765 |
+
+Models are GGUF files in `~/models` (`FILINGLENS_MODELS_DIR`), mounted read-only into `llm`, so
+they are downloaded once and never part of a build:
+
+| preset (`model` in requests) | runs on | for |
+|---|---|---|
+| `qwen2.5-7b` | GPU (as many layers as fit; one slot, so the system prompt stays cached) | question understanding, written answers |
+| `bge-m3-cpu` | CPU | embedding questions (~50 ms), so the GPU stays with the chat model |
+| `bge-m3-gpu` | GPU | bulk embedding of reports (~40 passages/s); the chat model is unloaded meanwhile |
+
+BGE-M3 GGUF, once (from a local or downloaded copy of BAAI/bge-m3):
 
 ```bash
-cp .env.example .env              # set the passwords / keys (and the LLM, optional)
-docker compose up -d --build      # first build downloads CUDA torch: several GB
+docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v /path/to/bge-m3:/model:ro -v ~/models:/out \
+  --entrypoint python3 ghcr.io/ggml-org/llama.cpp:full-b12110 /app/convert_hf_to_gguf.py /model \
+  --outtype q8_0 --outfile /out/bge-m3-Q8_0.gguf
+```
+
+```bash
+cp .env.example .env              # passwords / keys; LLM and embeddings point at :8081
+docker compose up -d --build      # stop a host llama-server on :8081 first
 docker compose exec app filinglens companies --refresh       # NSE's list of listed companies
 docker compose exec -it app filinglens users create-admin you@example.com
 ```
 
-Open http://127.0.0.1:8765, sign in, and add companies from **Admin → Data** (Download).
+Open http://127.0.0.1:8765, sign in, add companies from **Admin → Data** (Download), and embed
+their reports there ("Embed … pending", GPU).
 
-Infrastructure only, with the app on the host: `docker compose up -d postgres seaweedfs s3manager`,
-then `filinglens serve` (it reads `FILINGLENS_DATABASE_URL` and `FILINGLENS_S3_*` from `.env`).
-Stop a host `filinglens serve` before starting the `app` service: both use port 8765.
+Everything but the app, with the app on the host: `docker compose up -d postgres seaweedfs
+s3manager llm`, then `filinglens serve` (it reads `.env` the same way). Stop a host
+`filinglens serve` before starting the `app` service: both use port 8765.
 
 ## Quickstart (host)
     docker compose up -d postgres seaweedfs s3manager           # Postgres + S3 (see above)
@@ -216,10 +235,12 @@ search). For semantic search, embed its annual reports: in **Admin → Data** th
 embedded" filter lists companies with reports still to embed, each report shows ✓ / a % /
 plain, and "Embed" (per report, per company, or all pending) starts a background job that
 embeds one report after another with live progress. The vector file is saved after each
-report, so a stopped job keeps its work and the next run continues. "Auto" uses the GPU
-(shared with llama-server) and falls back to the CPU when it is full; choose "CPU" to leave the
-GPU to the LLM (about 2–3 passages a second on a laptop CPU). `filinglens index` does the same
-from the command line.
+report, so a stopped job keeps its work and the next run continues. "GPU" (~40 passages/s)
+unloads the chat model for the job's duration: questions are answered without the LLM
+meanwhile ("LLM paused"), and the chat model is loaded again when the job ends. "CPU" leaves
+chat alone but is slow (~1.6 passages/s). `filinglens index` embeds from the command line
+(CPU preset). Vectors are stored under the embedding backend's name (`bge-m3-gguf-q8`); after
+switching backends every report shows as pending until embedded again.
 Files are kept at `s3://filinglens/filings/<TICKER>/<xbrl|annual_report>/`; `work/inbox` is the
 local working copy the parsers read. Refresh the equity list with `filinglens companies --refresh`. Settings: `FILINGLENS_COOKIE_SECURE=1` when served over HTTPS;
 `FILINGLENS_AUTH_SECRET` signs reset/verification tokens (not used yet).
@@ -251,8 +272,10 @@ ratio radar, revenue-to-net-profit bridge, share of the group, ratios over time 
 heatmap. Companies keep one colour everywhere; dark, light or system theme (toggle in the header);
 missing values stay blank. Link parameters: `?q=<question>` asks on load, `?theme=dark|light|system`.
 
-`.mcp.json` registers an Ant Design docs MCP server (`@jzone-mcp/antd-components-mcp`, community)
-so Claude Code can look up antd 6 component APIs when editing the UI.
+`.mcp.json` registers Ant Design's official MCP server (`@ant-design/cli mcp`, pinned to antd
+6.7.0) so Claude Code can look up component APIs when editing the UI. Check UI changes with the
+same CLI, from `web/`: `npx @ant-design/cli lint ./src` (deprecated APIs, accessibility, usage)
+and `npx @ant-design/cli doctor`.
 
 ## Dev
     docker compose up -d postgres                # tests need Postgres

@@ -1,4 +1,4 @@
-import { Alert, Card, Tag, Tooltip } from 'antd'
+import { Alert, Card, Divider, Flex, Grid, Space, Tag, Tooltip, Typography, theme } from 'antd'
 import {
   BulbOutlined, ClockCircleOutlined, EditOutlined, RobotOutlined, SafetyCertificateOutlined, SearchOutlined, SettingOutlined,
 } from '@ant-design/icons'
@@ -9,7 +9,6 @@ import { DataTable } from './DataTable'
 import { Passages, Sources } from './Sources'
 import { StatStrip } from './Stats'
 import { ValueHero } from './ValueHero'
-import { Rise } from './bits'
 
 const LOWER_IS_BETTER = new Set([
   'employee_expense', 'finance_costs', 'depreciation_amortisation', 'total_expenses', 'tax_expense',
@@ -25,6 +24,8 @@ const READ_AS = /^read /                 // notes on how the question was read: 
 type A = Record<string, unknown>
 
 export function AnswerCard({ a }: { a: AnswerView }) {
+  const { token } = theme.useToken()
+  const wide = Grid.useBreakpoint().md
   const { metricLabel, companyName } = useMeta()
   const d = a.data
   const args = (a.args ?? {}) as A
@@ -55,76 +56,86 @@ export function AnswerCard({ a }: { a: AnswerView }) {
   const valueStat = d?.stats.find((s) => s.kind === 'value')
   const empty = (msg: string) => <Alert type="info" showIcon title={msg} />
 
-  return (
-    <Card
-      className="answer"
-      aria-label={`Answer: ${a.question}`}
-      styles={{ title: { whiteSpace: 'normal' }, body: { paddingTop: 18 } }}
-      title={
-        <div>
-          <div className="eyebrow">{explain ? 'Figures + annual report' : KIND[a.tool ?? ''] ?? 'Answer'}{explain && args.fy ? ` · ${args.fy} report` : span ? ` · ${span}` : ''}{args.scope && args.scope !== 'consolidated' ? ` · ${args.scope}` : ''}</div>
-          <h3 className="answer-title">{title}</h3>
-          {readAs.length > 0 && (
-            <div className="read-as">
-              <EditOutlined />
-              <span>{readAs.map((n) => n.charAt(0).toUpperCase() + n.slice(1)).join(' · ')}</span>
-            </div>
-          )}
-        </div>
-      }
-      extra={
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+  const kind = explain ? 'Figures and annual report' : KIND[a.tool ?? ''] ?? 'Answer'
+  const context = [kind, explain && args.fy ? `${args.fy} report` : span, args.scope && args.scope !== 'consolidated' ? String(args.scope) : '']
+    .filter(Boolean).join(' · ')
+  const section = (label: string) => <Divider titlePlacement="start" plain style={{ margin: 0 }}>{label}</Divider>
+  const hasFigures = (a.tool === 'get_value' && valueStat) || (d && (a.tool === 'get_trend' || a.tool === 'compare')) || (explain && a.figures)
+
+  const tags = (
+        <Space size={4} wrap style={{ justifyContent: 'flex-end' }}>
           <Tooltip title="What understood the question">
             <Tag icon={a.mode === 'llm' ? <RobotOutlined /> : a.mode === 'search' ? <SearchOutlined /> : a.mode === 'explain' ? <BulbOutlined /> : <SettingOutlined />} style={{ margin: 0 }}>
-              {a.mode === 'llm' ? 'LLM' : a.mode === 'search' ? 'report search' : a.mode === 'explain' ? 'figures + reports' : 'rules'}
+              {a.mode === 'llm' ? 'LLM' : a.mode === 'search' ? 'Report search' : a.mode === 'explain' ? 'Figures + reports' : 'Rules'}
             </Tag>
           </Tooltip>
           {verified > 0 && (
             <Tooltip title="Values found on the annual-report page">
-              <Tag className="tag-up" icon={<SafetyCertificateOutlined />} style={{ margin: 0 }}>verified · {verified}</Tag>
+              <Tag color="success" icon={<SafetyCertificateOutlined />} style={{ margin: 0 }}>Verified · {verified}</Tag>
             </Tooltip>
           )}
-          <Tag icon={<ClockCircleOutlined />} style={{ margin: 0 }} className="mono">
-            {a.seconds < 0.001 ? "<1 ms" : a.seconds < 1 ? `${Math.round(a.seconds * 1000)} ms` : `${a.seconds.toFixed(1)} s`}
+          <Tag icon={<ClockCircleOutlined />} style={{ margin: 0 }}>
+            {a.seconds < 0.001 ? '<1 ms' : a.seconds < 1 ? `${Math.round(a.seconds * 1000)} ms` : `${a.seconds.toFixed(1)} s`}
           </Tag>
-        </div>
+        </Space>
+  )
+
+  return (
+    <Card
+      aria-label={`Answer: ${a.question}`}
+      styles={{ title: { whiteSpace: 'normal', paddingBlock: token.paddingSM } }}
+      title={
+        <Flex vertical gap={2}>
+          <Typography.Text type="secondary" style={{ fontSize: token.fontSizeSM, fontWeight: 400 }}>{context}</Typography.Text>
+          <Typography.Text strong style={{ fontSize: token.fontSizeLG }}>{title}</Typography.Text>
+          {readAs.length > 0 && (
+            <Typography.Text type="secondary" style={{ fontSize: token.fontSizeSM, fontWeight: 400 }}>
+              <EditOutlined /> {readAs.map((n) => n.charAt(0).toUpperCase() + n.slice(1)).join(' · ')}
+            </Typography.Text>
+          )}
+          {!wide && <div style={{ marginTop: token.marginXS }}>{tags}</div>}
+        </Flex>
       }
+      extra={wide ? tags : undefined}
     >
-      <div className="answer-body">
+      <Flex vertical gap="middle">
         {d?.clarify && <Clarify text={d.clarify} />}
-        {a.answer && <Rise><p className="answer-text">{renderAnswer(a.answer)}</p></Rise>}
+        {a.answer && <Typography.Paragraph style={{ fontSize: token.fontSizeLG, margin: 0 }}>{renderAnswer(a.answer)}</Typography.Paragraph>}
         {a.answer_rejected && (
           <Alert type="warning" showIcon title="Written summary withheld" description={`${a.answer_rejected}. The figures below are from the filings.`} />
         )}
-        {a.tool === 'get_value' && valueStat && <Rise i={1}><ValueHero stat={valueStat} args={args} goodWhenUp={goodWhenUp} /></Rise>}
+
+        {hasFigures && (a.answer || d?.clarify || explain) && section('Figures')}
+        {a.tool === 'get_value' && valueStat && <ValueHero stat={valueStat} args={args} goodWhenUp={goodWhenUp} />}
         {a.tool === 'get_value' && !valueStat && d?.table === null && !d?.clarify && empty('No filed figure for this period. Nothing is estimated or filled in.')}
         {d && (a.tool === 'get_trend' || a.tool === 'compare') && (
           <>
-            {d.stats.length > 0 && <Rise i={1}><StatStrip stats={d.stats} goodWhenUp={goodWhenUp} /></Rise>}
-            {d.chart && <Rise i={2}><ChartPanel data={d} /></Rise>}
-            {d.table && <Rise i={3}><DataTable table={d.table} /></Rise>}
+            {d.stats.length > 0 && <StatStrip stats={d.stats} goodWhenUp={goodWhenUp} />}
+            {d.chart && <ChartPanel data={d} />}
+            {d.table && <DataTable table={d.table} />}
             {!d.table && empty('No filed figures for this request. Nothing is estimated or filled in.')}
           </>
         )}
         {explain && a.figures && (
           <>
-            {a.figures.stats.length > 0 && <Rise i={1}><StatStrip stats={a.figures.stats} goodWhenUp={goodWhenUp} /></Rise>}
-            {a.figures.chart && <Rise i={2}><ChartPanel data={a.figures} /></Rise>}
-            {a.figures.table && <Rise i={3}><DataTable table={a.figures.table} /></Rise>}
+            {a.figures.stats.length > 0 && <StatStrip stats={a.figures.stats} goodWhenUp={goodWhenUp} />}
+            {a.figures.chart && <ChartPanel data={a.figures} />}
+            {a.figures.table && <DataTable table={a.figures.table} />}
           </>
         )}
         {explain && !a.figures && empty('No filed figures for these years. The report passages are below.')}
+
         {d && a.tool === 'search_reports' && (
           <>
-            {explain && <div className="eyebrow" style={{ marginTop: 4 }}>What the annual report says</div>}
+            {(explain || a.answer) && section('From the annual report')}
             {d.passages.length
-              ? <Rise i={explain ? 4 : 1}><Passages passages={d.passages} query={(args.query as string) ?? a.question} /></Rise>
+              ? <Passages passages={d.passages} query={(args.query as string) ?? a.question} />
               : empty('Nothing relevant found in the loaded annual reports.')}
           </>
         )}
         {a.errors.length > 0 && <Alert type="error" showIcon title={a.errors.join(' · ')} />}
         {d && <Sources sources={[...(a.figures?.sources ?? []), ...d.sources]} notes={[...a.notes.filter((n) => !READ_AS.test(n)), ...d.notes]} />}
-      </div>
+      </Flex>
     </Card>
   )
 }
@@ -137,7 +148,7 @@ function Clarify({ text }: { text: string }) {
       type="info"
       showIcon
       title={msg.trim()}
-      description={cmd ? <>To add it, run: <code style={{ fontFamily: 'var(--mono)', fontSize: 12.5 }}>{cmd}</code></> : undefined}
+      description={cmd ? <>To add it, run: <Typography.Text code copyable>{cmd}</Typography.Text></> : undefined}
     />
   )
 }

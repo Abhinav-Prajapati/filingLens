@@ -36,12 +36,13 @@ from fastapi import Depends, HTTPException
 from pydantic import BaseModel
 
 from filingLens.acquire import BlockedError, NSEClient, acquire
+from filingLens.api.embeddings import index_model
 from filingLens.catalog import mark_have
 from filingLens.companies import add_companies, load_equity_list
 from filingLens.domain.fiscal import fy_int
 from filingLens.ingest.errors import IngestError
 from filingLens.ingest.pdf_pipeline import ingest_inbox
-from filingLens.retrieval.index import indexed_ids, pending_by_document
+from filingLens.retrieval.index import pending_by_document
 from filingLens.storage.db import Database, connect
 from filingLens.storage.objects import ObjectStore, filing_key
 
@@ -178,7 +179,8 @@ def _empty() -> dict[str, Any]:
 
 
 def local_holdings(con: Database, inbox: Path, stored: dict[str, int] | None = None,
-                   vectors: Path | None = None) -> dict[str, dict[str, Any]]:
+                   vectors: Path | None = None,
+                   model: str | None = None) -> dict[str, dict[str, Any]]:
     """Per ticker: FYs, latest quarter, XBRL files, annual reports (each with passages and
     embedded passages), files in the bucket, and files in the inbox not ingested yet."""
     h: dict[str, dict[str, Any]] = defaultdict(_empty)
@@ -188,7 +190,8 @@ def local_holdings(con: Database, inbox: Path, stored: dict[str, int] | None = N
                                 "WHERE period_type='Q'"):
         h[t]["quarters"].add((fy, q))
     ingested: set[str] = set()
-    progress = pending_by_document(con, vectors) if vectors is not None else {}
+    # passages count as embedded only with vectors of ``model`` (the one new vectors use)
+    progress = pending_by_document(con, vectors, model) if vectors is not None else {}
     for doc_id, t, kind, fy, name in con.execute(
             "SELECT doc_id, ticker, doc_type, fy, original_name FROM document"):
         ingested.add(name)
@@ -371,7 +374,7 @@ def add_admin_routes(app: Any, require_admin: Any, st: State, lock: threading.Lo
         listed = load_equity_list(st.equity_list)
         stored = stored_counts()
         with lock:
-            held = local_holdings(st.con, inbox, stored, st.vectors)
+            held = local_holdings(st.con, inbox, stored, st.vectors, index_model(st))
         rows = []
         for c in listed:
             x = held.get(c.symbol) or _empty()
@@ -388,7 +391,7 @@ def add_admin_routes(app: Any, require_admin: Any, st: State, lock: threading.Lo
         updated = (dt.datetime.fromtimestamp(st.equity_list.stat().st_mtime).isoformat(
             timespec="seconds") if st.equity_list.exists() else None)
         pending = [r for x in held.values() for r in x["reports"] if r.embedded < r.passages]
-        index = IndexInfo(model=indexed_ids(st.vectors)[0],
+        index = IndexInfo(model=index_model(st),
                           passages=sum(x["passages"] for x in held.values()),
                           embedded=sum(x["embedded"] for x in held.values()),
                           reports_pending=len(pending),

@@ -102,6 +102,7 @@ class State:
                  registry: Registry | None) -> None:
         self.con, self.vectors, self.equity_list = con, vectors, equity_list
         self._fixed = registry                       # tests pass a registry; never reloaded
+        self.llm_paused: str | None = None           # why the chat model is unavailable
         self.reload()
 
     def reload(self) -> None:
@@ -169,9 +170,11 @@ def create_app(database_url: str | None = None, vectors: str | Path | None = Non
 
     @app.post("/ask", response_model=AnswerView, dependencies=signed_in)
     def ask(req: AskRequest) -> AnswerView:
-        reason = "use_llm=false" if not req.use_llm else "not configured"
-        svc = AnswerService(st.ctx, client if req.use_llm else None, req.write_answer, reason,
-                            st.guard)
+        paused = st.llm_paused
+        reason = ("use_llm=false" if not req.use_llm else f"paused: {paused}" if paused
+                  else "not configured")
+        use = client if req.use_llm and not paused else None
+        svc = AnswerService(st.ctx, use, req.write_answer, reason, st.guard)
         with lock:
             prev = Previous(req.previous.question, req.previous.tool) if req.previous else None
             r = svc.answer(req.question, prev)

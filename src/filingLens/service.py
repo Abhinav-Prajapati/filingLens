@@ -162,6 +162,20 @@ def metric_words(metrics: list[str], reg: Registry) -> list[str]:
     return list(dict.fromkeys(words))
 
 
+def topic_words(question: str, reg: Registry) -> str:
+    """The question without company names, years and filler: what to search the reports for.
+    Falls back to the whole question when nothing is left."""
+    drop = set(STOPWORDS) | {"fy", "tell", "about", "show", "give", "details", "detail",
+                             "please", "what", "which", "who", "how", "much", "many"}
+    for t, c in reg.companies.items():
+        for a in (t.lower(), c.name.lower(), *c.aliases):
+            drop.update(a.split())
+    norm = rules._norm(question)
+    words = [w for w in re.findall(r"[a-z][a-z\-]+", norm) if w not in drop and len(w) > 1
+             and not re.fullmatch(r"fy\d*", w)]
+    return " ".join(dict.fromkeys(words)) or question
+
+
 def explain_query(question: str, metrics: list[str], change: float | None,
                   reg: Registry) -> str:
     """Search words for a "why" question: its own content words, the metric's name, and words
@@ -289,6 +303,8 @@ class AnswerService:
                        errors=list(res.errors))
         if res.ok and res.tool in ("ask_user", "search_reports"):
             override = self._data_instead(question, res.tool)
+            if override is None and res.tool == "ask_user":
+                override = self._search_instead(question)
             if override is not None:
                 out = override
                 out.errors, out.attempts = list(res.errors), res.attempts
@@ -314,6 +330,21 @@ class AnswerService:
         what = "asked back" if model_tool == "ask_user" else "searched the report text"
         r.notes.insert(0, f"the model {what}; the question names covered companies and a known "
                           "metric, so the checked data was used")
+        return r
+
+    def _search_instead(self, question: str) -> Response | None:
+        """The model asked back, but the question names covered companies and no metric:
+        a topic like debentures or dividends is in the annual reports, so search them."""
+        norm = rules._norm(question)
+        if not rules.find_companies(norm, self.ctx.registry) or rules.plan(question,
+                                                                            self.ctx.registry):
+            return None
+        r = self._search(question)
+        if r.result is None or not r.result.rows:
+            return None
+        r.mode = "llm"
+        r.notes[:] = [("the model asked back; the question names a covered company and a topic "
+                      "that is not a stored figure, so its annual reports were searched")]
         return r
 
     def _checked_answer(self, question: str, result: ToolResult) -> Answer:
@@ -353,12 +384,27 @@ class AnswerService:
         return r
 
     def _search(self, question: str) -> Response:
-        tickers = rules.find_companies(rules._norm(question), self.ctx.registry)
-        args = validate_call("search_reports", {"query": question, "tickers": tickers},
-                             self.ctx.registry)
+        """Report passages for a question with no stored metric: the topic words only (no
+        company names or years), the report of the year asked about first, then the others."""
+        reg = self.ctx.registry
+        norm = rules._norm(question)
+        tickers = rules.find_companies(norm, reg)
+        fys = rules.find_years(norm).get("fys") or []
+        query = topic_words(question, reg)
+        args = validate_call("search_reports", {"query": query, "tickers": tickers,
+                                                "fy": fys[-1] if len(fys) == 1 else None},
+                             reg)
         r = Response(question, "search", "search_reports", args.model_dump(),
                      notes=["no metric recognised: showing the most relevant report passages"])
-        r.result = self._run("search_reports", args, r)
+        try:
+            r.result = search_passages(self.ctx, query, tickers, fys, [], k=5,
+                                       tiers=[(fys, []), ([], [])] if fys else None)
+        except Exception as e:                      # noqa: BLE001 - report, never crash
+            r.errors.append(f"tool search_reports failed: {type(e).__name__}: {e}")
+            r.result = ToolResult("search_reports", "the search failed",
+                                  notes=[f"{type(e).__name__}: {e}"])
+        if fys and r.result.rows:
+            r.result.notes.insert(0, f"searched the {', '.join(fys)} annual report first")
         return r
 
     def _run(self, tool: str, args: Any, r: Response) -> ToolResult:

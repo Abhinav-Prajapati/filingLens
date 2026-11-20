@@ -276,8 +276,8 @@ def test_lists_reports_with_their_embedding_status(with_reports):
         sign_in(c, "boss@example.com")
         make_admin(tmp_path, "boss@example.com")
         v = c.get("/admin/companies").json()
-        assert v["index"] == {"model": None, "passages": 5, "embedded": 0, "reports_pending": 2,
-                              "companies_pending": 1}
+        assert v["index"] == {"model": "BAAI/bge-m3", "passages": 5, "embedded": 0,
+                              "reports_pending": 2, "companies_pending": 1}
         tcs = next(r for r in v["rows"] if r["symbol"] == "TCS")
         assert [(r["fy"], r["passages"], r["embedded"]) for r in tcs["reports"]] == [
             ("FY24", 3, 0), ("FY25", 2, 0)]

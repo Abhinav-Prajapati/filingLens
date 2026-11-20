@@ -1,8 +1,14 @@
 {
   "mcpServers": {
-    "antd-components": {
+    "antd": {
       "command": "npx",
-      "args": ["-y", "@jzone-mcp/antd-components-mcp@2.0.24"]
+      "args": [
+        "-y",
+        "@ant-design/cli@6.7.1",
+        "mcp",
+        "--version",
+        "6.7.0"
+      ]
     }
   }
 }

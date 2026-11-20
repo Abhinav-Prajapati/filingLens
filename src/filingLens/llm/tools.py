@@ -101,7 +101,7 @@ class GetTrend(_Base):
 
 
 class Compare(_Base):
-    tickers: list[str] = Field(min_length=1, max_length=5)
+    tickers: list[str] = Field(min_length=1, max_length=8)   # 8 = colours a chart can tell apart
     metrics: list[str] = Field(min_length=1, max_length=5)
     fys: list[str] = Field(default_factory=list)
     last_n_years: int | None = Field(None, ge=1, le=15)

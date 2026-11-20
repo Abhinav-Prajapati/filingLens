@@ -1,11 +1,12 @@
 # filingLens stack. Secrets come from .env (see .env.example).
 #
-#   docker compose up -d                 everything: Postgres, S3 store, S3 browser, the app
-#   docker compose up -d postgres seaweedfs s3manager      infrastructure only (run the app
-#                                                          on the host with `filinglens serve`)
+#   docker compose up -d                 everything: Postgres, S3 store, S3 browser, the llama.cpp
+#                                        model server, the app
+#   docker compose up -d postgres seaweedfs s3manager llm   all but the app (run it on the host
+#                                                           with `filinglens serve`)
 #
-# Every port is published on 127.0.0.1 only. The app uses the host network so it can reach a
-# local llama-server (FILINGLENS_LLM_BASE_URL=http://localhost:...) exactly as on the host.
+# Every port is published on 127.0.0.1 only. The app uses the host network, so the same .env
+# works on the host and in the container (localhost:5442, :8333, :8081).
 
 name: filinglens
 
@@ -61,7 +62,30 @@ services:
     depends_on:
       seaweedfs: {condition: service_healthy}
 
-  # the API and web UI on http://127.0.0.1:8765 (stop a host `filinglens serve` first)
+  # llama.cpp router on http://127.0.0.1:8081/v1: the chat model (GPU) and BGE-M3 embeddings
+  # (CPU for questions, GPU for bulk jobs). Presets: llm/models.ini. GGUF files are read from
+  # ~/models (FILINGLENS_MODELS_DIR), never baked into an image. Stop a host llama-server on
+  # port 8081 first.
+  llm:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda-b12110
+    restart: unless-stopped
+    command: ["--models-preset", "/config/models.ini", "--host", "0.0.0.0", "--port", "8080"]
+    ports: ["127.0.0.1:8081:8080"]
+    volumes:
+      - ${FILINGLENS_MODELS_DIR:-${HOME}/models}:/models:ro
+      - ./llm:/config:ro
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  # the API and web UI on http://127.0.0.1:8765 (stop a host `filinglens serve` first). No GPU
+  # and no PyTorch: models run in the llm service.
   app:
     build: .
     image: filinglens-app
@@ -70,14 +94,10 @@ services:
     env_file: [.env]
     volumes:
       - ./work:/app/work                              # equity list, company overlay, vectors
-      - ${HOME}/.cache/huggingface:/root/.cache/huggingface   # BGE-M3 model, not re-downloaded
-    deploy:
-      resources:
-        reservations:
-          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
     depends_on:
       postgres: {condition: service_healthy}
       seaweedfs: {condition: service_healthy}
+      llm: {condition: service_healthy}
 
 volumes:
   pgdata:

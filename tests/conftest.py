@@ -39,7 +39,18 @@ def _test_db() -> str:
 
 
 @pytest.fixture(autouse=True)
-def _pg_schema(_test_db, monkeypatch):
+def _no_dotenv(monkeypatch):
+    """Tests never read the developer's .env (LLM, embeddings server, S3...): only what they set."""
+    from filingLens import config
+
+    monkeypatch.setattr(config, "_dotenv", lambda path=".env": {})
+    for k in [k for k in __import__("os").environ if k.startswith("FILINGLENS_")
+              and k != "FILINGLENS_TEST_DATABASE_URL"]:
+        monkeypatch.delenv(k, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _pg_schema(_test_db, _no_dotenv, monkeypatch):
     schema = f"t_{uuid.uuid4().hex[:12]}"
     with psycopg.connect(_test_db, autocommit=True) as c:
         c.execute(f"CREATE SCHEMA {schema}")

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, App as AntApp, Button, Card, Descriptions, Drawer, Empty, Input, Progress, Segmented, Select, Skeleton, Steps, Table, Tag,
-  Tooltip, Typography,
+  Alert, App as AntApp, Button, Card, Col, Descriptions, Divider, Drawer, Empty, Flex, Input, Progress, Row, Segmented, Select,
+  Skeleton, Space, Statistic, Steps, Table, Tag, Tooltip, Typography, theme,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
@@ -14,7 +14,8 @@ import {
 import { embedding, useEmbedJob } from '../lib/embedJob'
 import { EmbeddingPanel, ReportTag } from './EmbeddingPanel'
 import { useMeta } from '../lib/meta'
-import { Rise } from './bits'
+import { PageHeader } from './Chrome'
+import { Rows } from './Rows'
 
 type Show = 'all' | 'tracked' | 'xbrl' | 'reports' | 'unembedded' | 'stored' | 'untracked'
 
@@ -90,6 +91,7 @@ function useJobs(onFinished: (j: Job) => void) {
 /** Admin → Data: every NSE-listed equity, what this install holds for it (database and S3
  *  bucket), a live check of what NSE has, and downloads (NSE → bucket → ingest). */
 export function AdminData() {
+  const { token } = theme.useToken()
   const { message } = AntApp.useApp()
   const { refresh: refreshMeta } = useMeta()
   const [data, setData] = useState<ListedCompanies | null>(null)
@@ -148,58 +150,63 @@ export function AdminData() {
   }, [data])
   const running = Object.values(jobs).filter(isActive)
 
-  if (error && !data) return <div className="page wide"><Alert type="error" showIcon title="Couldn’t load the company list" description={error} /></div>
-  if (!data) return <div className="page wide"><Skeleton active paragraph={{ rows: 12 }} /></div>
+  const page = (children: React.ReactNode) => (
+    <div style={{ maxWidth: 1400, margin: '0 auto' }}>
+      <PageHeader title="Data" description="Every NSE-listed company: what is held here, what NSE has, and what is embedded for search" />
+      {children}
+    </div>
+  )
+  if (error && !data) return page(<Alert type="error" showIcon title="Couldn’t load the company list" description={error} />)
+  if (!data) return page(<Card><Skeleton active paragraph={{ rows: 12 }} /></Card>)
   if (!data.total) {
-    return (
-      <div className="page wide">
-        <Card>
-          <Empty description={<>NSE’s equity list hasn’t been downloaded yet. Run <code>filinglens companies --refresh</code>, then reload.</>} />
-        </Card>
-      </div>
+    return page(
+      <Card>
+        <Empty description={<>NSE’s equity list hasn’t been downloaded yet. Run <Typography.Text code>filinglens companies --refresh</Typography.Text>, then reload.</>} />
+      </Card>,
     )
   }
+
+  const secondary = (text: React.ReactNode) => <Typography.Text type="secondary" style={{ fontSize: token.fontSizeSM }}>{text}</Typography.Text>
+  const pendingNote = (n: number) => <Typography.Text type="warning" style={{ fontSize: token.fontSizeSM }}>{n} downloaded, not ingested</Typography.Text>
 
   const columns: ColumnsType<ListedRow> = [
     {
       title: 'Company', key: 'symbol', fixed: 'left', width: 220,
       sorter: (a, b) => a.symbol.localeCompare(b.symbol), defaultSortOrder: 'ascend',
       render: (_, r) => (
-        <div className="co-cell">
-          <span className="co-sym">{r.symbol}</span>
-          <span className="co-full" title={r.name}>{r.name}</span>
-        </div>
+        <Flex vertical>
+          <Typography.Text strong>{r.symbol}</Typography.Text>
+          <Typography.Text type="secondary" ellipsis={{ tooltip: r.name }} style={{ maxWidth: 196 }}>{r.name}</Typography.Text>
+        </Flex>
       ),
     },
     {
       title: 'Series · listed', dataIndex: 'listed_on', width: 120,
       sorter: (a, b) => (a.listed_on ?? '').localeCompare(b.listed_on ?? ''),
       render: (d: string | null, r) => (
-        <div className="hold">
-          <Tag style={{ margin: 0, width: 'fit-content' }} className="mono">{r.series}</Tag>
-          <span className="muted num" style={{ fontSize: 12 }}>{date(d)}</span>
-        </div>
+        <Flex vertical gap={4} align="flex-start">
+          <Tag style={{ margin: 0 }}>{r.series}</Tag>
+          {secondary(date(d))}
+        </Flex>
       ),
     },
     {
       title: 'Status', key: 'tracked', width: 104,
       sorter: (a, b) => Number(b.tracked) - Number(a.tracked),
-      render: (_, r) => (r.tracked
-        ? <Tag color="gold" style={{ margin: 0 }}>Tracked</Tag>
-        : <span className="muted" style={{ fontSize: 12.5 }}>Not tracked</span>),
+      render: (_, r) => (r.tracked ? <Tag color="blue" style={{ margin: 0 }}>Tracked</Tag> : secondary('Not tracked')),
     },
     {
       title: <Tooltip title="Ingested XBRL results: the years with figures, the latest quarter, and files downloaded but not ingested yet">XBRL figures</Tooltip>,
       key: 'xbrl', width: 170,
       sorter: (a, b) => a.fys.length - b.fys.length || a.xbrl_files - b.xbrl_files,
       render: (_, r) => (
-        <div className="hold">
+        <Flex vertical>
           {r.fys.length || r.xbrl_files
-            ? <span><b>{fySpan(r.fys) || 'quarters only'}</b> <span className="muted">· {r.xbrl_files} file{r.xbrl_files === 1 ? '' : 's'}</span></span>
-            : <span className="muted">–</span>}
-          {r.latest_quarter && <span className="muted">latest {r.latest_quarter}</span>}
-          {r.pending_xbrl > 0 && <span className="pending">{r.pending_xbrl} downloaded, not ingested</span>}
-        </div>
+            ? <Typography.Text><Typography.Text strong>{fySpan(r.fys) || 'Quarters only'}</Typography.Text> {secondary(`· ${r.xbrl_files} file${r.xbrl_files === 1 ? '' : 's'}`)}</Typography.Text>
+            : <Typography.Text type="secondary">–</Typography.Text>}
+          {r.latest_quarter && secondary(`Latest ${r.latest_quarter}`)}
+          {r.pending_xbrl > 0 && pendingNote(r.pending_xbrl)}
+        </Flex>
       ),
     },
     {
@@ -207,25 +214,25 @@ export function AdminData() {
       key: 'reports', width: 180,
       sorter: (a, b) => a.annual_reports.length - b.annual_reports.length,
       render: (_, r) => (
-        <div className="hold">
+        <Flex vertical gap={4}>
           {r.reports.length
-            ? <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{r.reports.map((x) => <ReportTag key={x.doc_id} r={x} />)}</span>
+            ? <Flex gap={4} wrap>{r.reports.map((x) => <ReportTag key={x.doc_id} r={x} />)}</Flex>
             : r.annual_reports.length
-              ? <span style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{r.annual_reports.map((fy) => <Tag key={fy} style={{ margin: 0 }}>{fy}</Tag>)}</span>
-              : <span className="muted">–</span>}
-          {r.pending_reports > 0 && <span className="pending">{r.pending_reports} downloaded, not ingested</span>}
-        </div>
+              ? <Flex gap={4} wrap>{r.annual_reports.map((fy) => <Tag key={fy} style={{ margin: 0 }}>{fy}</Tag>)}</Flex>
+              : <Typography.Text type="secondary">–</Typography.Text>}
+          {r.pending_reports > 0 && pendingNote(r.pending_reports)}
+        </Flex>
       ),
     },
     {
       title: <Tooltip title="Files kept in the S3 bucket">In S3</Tooltip>, dataIndex: 'stored', width: 80, align: 'right',
       sorter: (a, b) => a.stored - b.stored,
-      render: (n: number) => (n ? <span className="num">{n}</span> : <span className="muted">–</span>),
+      render: (n: number) => (n ? n : <Typography.Text type="secondary">–</Typography.Text>),
     },
     {
-      title: 'Passages', dataIndex: 'passages', width: 96, align: 'right',
+      title: 'Passages', dataIndex: 'passages', width: 100, align: 'right',
       sorter: (a, b) => a.passages - b.passages,
-      render: (n: number) => (n ? <span className="num">{n.toLocaleString('en-IN')}</span> : <span className="muted">–</span>),
+      render: (n: number) => (n ? n.toLocaleString('en-IN') : <Typography.Text type="secondary">–</Typography.Text>),
     },
     {
       title: '', key: 'actions', width: 150, fixed: 'right',
@@ -233,17 +240,20 @@ export function AdminData() {
         const j = jobs[r.symbol]
         if (isActive(j)) {
           return (
-            <button type="button" className="row-job" onClick={() => setOpen(r)} title="Show progress">
-              <Progress percent={pct(j!)} size="small" showInfo={false} status="active" />
-              <span>{j!.stage === 'queued' ? 'Queued' : j!.stage === 'downloading' ? `${j!.done}/${j!.total} files` : j!.stage === 'ingesting' ? 'Ingesting' : 'Asking NSE'}</span>
-            </button>
+            <Tooltip title="Show progress">
+              <Flex vertical role="button" tabIndex={0} onClick={() => setOpen(r)} style={{ cursor: 'pointer' }}
+                onKeyDown={(e) => { if (e.key === 'Enter') setOpen(r) }}>
+                <Progress percent={pct(j!)} size="small" showInfo={false} status="active" />
+                {secondary(j!.stage === 'queued' ? 'Queued' : j!.stage === 'downloading' ? `${j!.done}/${j!.total} files` : j!.stage === 'ingesting' ? 'Ingesting' : 'Asking NSE')}
+              </Flex>
+            </Tooltip>
           )
         }
         return (
-          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+          <Space size={4} style={{ width: '100%', justifyContent: 'flex-end' }}>
             {!hasData(r) && (
               <Tooltip title="Download every filing NSE has, save it to S3 and ingest it">
-                <Button size="small" type="primary" icon={<DownloadOutlined />} onClick={() => download(r)}>Download</Button>
+                <Button size="small" icon={<DownloadOutlined />} onClick={() => download(r)}>Download</Button>
               </Tooltip>
             )}
             {needsEmbedding(r) && (
@@ -251,40 +261,39 @@ export function AdminData() {
                 <Button size="small" icon={<ThunderboltOutlined />} disabled={embedRunning} onClick={() => embed({ tickers: [r.symbol] }, r.symbol)} aria-label={`Embed ${r.symbol}'s annual reports`} />
               </Tooltip>
             )}
-            <Tooltip title={hasData(r) ? 'Check NSE, reports, files' : 'Details'}>
+            <Tooltip title={hasData(r) ? 'NSE, reports and files' : 'Details'}>
               <Button size="small" icon={<CloudServerOutlined />} onClick={() => setOpen(r)} aria-label={`Open ${r.symbol}`} />
             </Tooltip>
-          </div>
+          </Space>
         )
       },
     },
   ]
 
   const tiles = [
-    { icon: <DatabaseOutlined />, label: 'Listed on NSE', value: data.total, foot: data.list_updated ? `list from ${date(data.list_updated)}` : '' },
-    { icon: <SearchOutlined />, label: 'Tracked', value: counts.tracked, foot: 'in the company list, can be asked about' },
-    { icon: <CloudDownloadOutlined />, label: 'With XBRL figures', value: counts.xbrl, foot: 'results ingested' },
-    { icon: <CloudUploadOutlined />, label: 'In S3', value: counts.stored, foot: data.storage ? 'companies with files in the bucket' : 'no bucket configured' },
+    { icon: <DatabaseOutlined />, label: 'Listed on NSE', value: data.total, foot: data.list_updated ? `List from ${date(data.list_updated)}` : '' },
+    { icon: <SearchOutlined />, label: 'Tracked', value: counts.tracked, foot: 'In the company list, can be asked about' },
+    { icon: <CloudDownloadOutlined />, label: 'With XBRL figures', value: counts.xbrl, foot: 'Results ingested' },
+    { icon: <CloudUploadOutlined />, label: 'In S3', value: counts.stored, foot: data.storage ? 'Companies with files in the bucket' : 'No bucket configured' },
   ]
 
-  return (
-    <div className="page wide">
-      <div className="admin-tiles">
-        {tiles.map((t, i) => (
-          <Rise key={t.label} i={i}>
-            <Card className="admin-tile">
-              <div className="admin-tile-head"><span className="prompt-icon">{t.icon}</span>{t.label}</div>
-              <div className="admin-tile-num num">{t.value.toLocaleString('en-IN')}</div>
-              <div className="muted" style={{ fontSize: 12 }}>{t.foot}</div>
+  return page(
+    <Flex vertical gap="middle">
+      <Row gutter={[16, 16]}>
+        {tiles.map((t) => (
+          <Col key={t.label} xs={12} lg={6}>
+            <Card style={{ height: '100%' }}>
+              <Statistic title={<Space size="small">{t.icon}{t.label}</Space>} value={t.value} />
+              {secondary(t.foot)}
             </Card>
-          </Rise>
+          </Col>
         ))}
-      </div>
+      </Row>
 
-      {!data.storage && <Alert type="warning" showIcon style={{ marginBottom: 14 }} title="No S3 bucket configured" description="Downloads are kept in the local inbox only. Set FILINGLENS_S3_* in .env and start the stack with docker compose." />}
+      {!data.storage && <Alert type="warning" showIcon title="No S3 bucket configured" description="Downloads are kept in the local inbox only. Set FILINGLENS_S3_* in .env and start the stack with docker compose." />}
       {running.length > 0 && (
         <Alert
-          type="info" showIcon style={{ marginBottom: 14 }}
+          type="info" showIcon
           title={`Downloading ${running.map((j) => j.symbol).join(', ')}`}
           description="Runs one company at a time (NSE limits request rates). You can keep working; the list updates when each finishes."
         />
@@ -293,33 +302,34 @@ export function AdminData() {
       <EmbeddingPanel index={data.index} job={embedJob.job} device={device} setDevice={setDevice}
         onEmbedAll={() => embed({}, '')} onStop={() => { embedJob.stop().catch((e: Error) => message.error(e.message)) }} />
 
-      <div className="toolbar">
-        <Input
-          allowClear
-          prefix={<SearchOutlined />}
-          placeholder="Search symbol, name or ISIN"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          style={{ width: 280 }}
-          aria-label="Search companies"
-        />
-        <Segmented<Show>
-          value={show}
-          onChange={setShow}
-          options={SHOW.map((s) => ({ value: s.value, label: <span>{s.label} <span className="muted num">{counts[s.value].toLocaleString('en-IN')}</span></span> }))}
-        />
-        <Select value={series} onChange={setSeries} options={seriesOptions} style={{ width: 140 }} aria-label="NSE series" />
-        <span className="muted" style={{ marginLeft: 'auto', fontSize: 12.5 }}>{rows.length.toLocaleString('en-IN')} shown</span>
-      </div>
+      <Card size="small">
+        <Flex gap="middle" align="center" wrap>
+          <Input
+            allowClear
+            prefix={<SearchOutlined />}
+            placeholder="Search symbol, name or ISIN"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            style={{ width: 280 }}
+            aria-label="Search companies"
+          />
+          <Segmented<Show>
+            value={show}
+            onChange={setShow}
+            options={SHOW.map((s) => ({ value: s.value, label: <Space size={4}>{s.label}<Typography.Text type="secondary">{counts[s.value].toLocaleString('en-IN')}</Typography.Text></Space> }))}
+          />
+          <Select value={series} onChange={setSeries} options={seriesOptions} style={{ width: 140 }} aria-label="NSE series" />
+          <Typography.Text type="secondary" style={{ marginLeft: 'auto' }}>{rows.length.toLocaleString('en-IN')} shown</Typography.Text>
+        </Flex>
+      </Card>
 
       <Card styles={{ body: { padding: 0 } }}>
         <Table<ListedRow>
-          className="data-table admin-table"
           size="small"
           rowKey="symbol"
           columns={columns}
           dataSource={rows}
-          scroll={{ x: 1170 }}
+          scroll={{ x: 1140 }}
           showSorterTooltip={false}
           locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={query ? `No listed company matches “${query}”` : 'Nothing here'} /> }}
           pagination={{ defaultPageSize: 25, pageSizeOptions: [25, 50, 100], showSizeChanger: true, size: 'small', showTotal: (n, [a, b]) => `${a}–${b} of ${n.toLocaleString('en-IN')}` }}
@@ -330,7 +340,7 @@ export function AdminData() {
       <CompanyDrawer row={openRow} job={openRow ? jobs[openRow.symbol] : undefined} storage={data.storage}
         onDownload={download} onClose={() => setOpen(null)}
         embedJob={embedJob.job} onEmbed={(docIds) => openRow && embed({ doc_ids: docIds }, openRow.symbol)} />
-    </div>
+    </Flex>,
   )
 }
 
@@ -339,6 +349,7 @@ function CompanyDrawer({ row, job, storage, onDownload, onClose, embedJob, onEmb
   row: ListedRow | null; job?: Job; storage: boolean; onDownload: (r: ListedRow) => void; onClose: () => void
   embedJob: EmbedJob | null; onEmbed: (docIds: string[]) => void
 }) {
+  const { token } = theme.useToken()
   const [res, setRes] = useState<NSEAvailability | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -384,6 +395,7 @@ function CompanyDrawer({ row, job, storage, onDownload, onClose, embedJob, onEmb
   const active = isActive(job)
   const cmd = `filinglens download ${sym} --annual-reports && filinglens ingest work/inbox`
   const newFiles = res?.new_files ?? 0
+  const section = (label: React.ReactNode) => <Divider titlePlacement="start" plain style={{ margin: 0 }}>{label}</Divider>
 
   return (
     <Drawer
@@ -391,77 +403,75 @@ function CompanyDrawer({ row, job, storage, onDownload, onClose, embedJob, onEmb
       onClose={onClose}
       size="large"
       title={row && (
-        <div>
-          <div className="eyebrow">{row.tracked ? 'Tracked' : 'Not tracked'} · {row.series} · {row.isin}</div>
-          <div style={{ fontSize: 16, fontWeight: 600, marginTop: 2 }}>{row.name} <span className="muted mono" style={{ fontSize: 13 }}>{row.symbol}</span></div>
-        </div>
+        <Flex vertical>
+          <Typography.Text type="secondary" style={{ fontSize: token.fontSizeSM, fontWeight: 400 }}>{row.tracked ? 'Tracked' : 'Not tracked'} · {row.series} · {row.isin}</Typography.Text>
+          <Typography.Text strong style={{ fontSize: token.fontSizeLG }}>{row.name} <Typography.Text type="secondary">{row.symbol}</Typography.Text></Typography.Text>
+        </Flex>
       )}
       extra={<Button icon={<ReloadOutlined />} onClick={() => check(sym, true)} disabled={busy || active}>Check NSE again</Button>}
     >
       {row && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+        <Flex vertical gap="large">
           <DownloadPanel row={row} job={job} newFiles={newFiles} checked={!!res} storage={storage} onDownload={() => onDownload(row)} />
 
+          {section('On NSE')}
           {busy && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <Flex vertical gap="middle">
               <Steps
-                orientation="vertical" size="small" type="dot" current={1}
+                orientation="vertical" size="small" current={1}
                 items={[{ title: 'Connect to NSE' }, { title: 'List XBRL results (annual and quarterly)' }, { title: 'List annual reports' }]}
               />
-              <p className="muted" style={{ margin: 0 }}>NSE is asked slowly on purpose, so this takes about 10 seconds{active ? ' (longer while a download is running)' : ''}.</p>
-              <Skeleton active paragraph={{ rows: 4 }} title={false} />
-            </div>
+              <Typography.Text type="secondary">NSE is asked slowly on purpose, so this takes about 10 seconds{active ? ' (longer while a download is running)' : ''}.</Typography.Text>
+            </Flex>
           )}
           {error && <Alert type="error" showIcon title="NSE check failed" description={error} action={<Button size="small" onClick={() => check(sym, true)}>Retry</Button>} />}
           {res && (
-            <>
+            <Flex vertical gap="small">
               {res.warning && <Alert type="warning" showIcon title={res.warning} />}
               <Descriptions
                 size="small" column={1} bordered
                 items={[
-                  { key: 'x', label: 'XBRL results on NSE', children: res.xbrl_filings ? <b>{res.xbrl_filings} filings</b> : <span className="muted">none in the last 5 years</span> },
+                  { key: 'x', label: 'XBRL results on NSE', children: res.xbrl_filings ? <Typography.Text strong>{res.xbrl_filings} filings</Typography.Text> : <Typography.Text type="secondary">None in the last 5 years</Typography.Text> },
                   { key: 'y', label: 'Full years', children: res.full_years.length ? `${fySpan(res.full_years)} (${res.full_years.length})` : '–' },
                   { key: 'q', label: 'Quarters', children: res.quarters.length ? `${res.quarters[0]} … ${res.quarters[res.quarters.length - 1]} (${res.quarters.length})` : '–' },
-                  { key: 'r', label: 'Annual reports', children: res.annual_reports.length ? res.annual_reports.map((fy) => <Tag key={fy}>{fy}</Tag>) : '–' },
-                  { key: 'n', label: 'Not downloaded yet', children: newFiles ? <Tag className="tag-down" style={{ margin: 0 }}>{newFiles} new</Tag> : <Tag className="tag-up" style={{ margin: 0 }}>all held</Tag> },
-                  { key: 'h', label: 'Held here', children: row.fys.length ? `${fySpan(row.fys)} figures · ${row.xbrl_files} XBRL files${row.annual_reports.length ? ` · reports ${row.annual_reports.join(', ')}` : ''}` : <span className="muted">nothing yet</span> },
+                  { key: 'r', label: 'Annual reports', children: res.annual_reports.length ? <Flex gap={4} wrap>{res.annual_reports.map((fy) => <Tag key={fy} style={{ margin: 0 }}>{fy}</Tag>)}</Flex> : '–' },
+                  { key: 'n', label: 'Not downloaded yet', children: newFiles ? <Tag color="warning" style={{ margin: 0 }}>{newFiles} new</Tag> : <Tag color="success" style={{ margin: 0 }}>All held</Tag> },
+                  { key: 'h', label: 'Held here', children: row.fys.length ? `${fySpan(row.fys)} figures · ${row.xbrl_files} XBRL files${row.annual_reports.length ? ` · reports ${row.annual_reports.join(', ')}` : ''}` : <Typography.Text type="secondary">Nothing yet</Typography.Text> },
                 ]}
               />
-            </>
+              <Typography.Text type="secondary" style={{ fontSize: token.fontSizeSM }}>Checked {new Date(res.checked_at).toLocaleString('en-IN')} · kept for an hour</Typography.Text>
+            </Flex>
           )}
 
-          {row.reports.length > 0 && (
-            <ReportsList row={row} job={embedJob} onEmbed={onEmbed} />
-          )}
+          {row.reports.length > 0 && <ReportsList row={row} job={embedJob} onEmbed={onEmbed} />}
 
           {storage && (
-            <div>
-              <div className="eyebrow" style={{ marginBottom: 8 }}>In the S3 bucket{files ? ` · ${files.length} file${files.length === 1 ? '' : 's'}` : ''}</div>
+            <>
+              {section(`In the S3 bucket${files ? ` · ${files.length} file${files.length === 1 ? '' : 's'}` : ''}`)}
               {files === null ? <Skeleton active paragraph={{ rows: 2 }} title={false} />
-                : files.length === 0 ? <span className="muted">No files yet.</span>
+                : files.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No files yet" />
                   : (
                     <Table<StoredFile>
                       size="small" rowKey="key" dataSource={files}
                       pagination={files.length > 10 ? { pageSize: 10, size: 'small' } : false}
                       columns={[
-                        { title: 'File', dataIndex: 'name', render: (n: string, f) => <span className="file-name"><FileTextOutlined /> <span title={f.key}>{n}</span></span> },
-                        { title: 'Type', dataIndex: 'kind', width: 110, render: (k: string) => (k === 'xbrl' ? 'XBRL' : 'Annual report') },
-                        { title: 'Size', dataIndex: 'size', width: 80, align: 'right', render: (n: number) => <span className="num muted">{size(n)}</span> },
-                        { title: '', key: 'dl', width: 44, render: (_, f) => <Tooltip title="Download"><Button size="small" type="text" icon={<DownloadOutlined />} href={f.url} target="_blank" aria-label={`Download ${f.name}`} /></Tooltip> },
+                        { title: 'File', dataIndex: 'name', render: (n: string, f) => <Space size="small"><FileTextOutlined /><Typography.Text ellipsis={{ tooltip: f.key }} style={{ maxWidth: 260 }}>{n}</Typography.Text></Space> },
+                        { title: 'Type', dataIndex: 'kind', width: 120, render: (k: string) => (k === 'xbrl' ? 'XBRL' : 'Annual report') },
+                        { title: 'Size', dataIndex: 'size', width: 88, align: 'right', render: (n: number) => <Typography.Text type="secondary">{size(n)}</Typography.Text> },
+                        { title: '', key: 'dl', width: 48, render: (_, f) => <Tooltip title="Download"><Button size="small" type="text" icon={<DownloadOutlined />} href={f.url} target="_blank" aria-label={`Download ${f.name}`} /></Tooltip> },
                       ]}
                     />
                   )}
-            </div>
+            </>
           )}
 
           {res && newFiles > 0 && !active && (
-            <div>
-              <div className="eyebrow" style={{ marginBottom: 6 }}>Or from the command line</div>
-              <Typography.Paragraph copyable={{ text: cmd }} className="cmd">{cmd}</Typography.Paragraph>
-            </div>
+            <>
+              {section('Or from the command line')}
+              <Typography.Text code copyable={{ text: cmd }}>{cmd}</Typography.Text>
+            </>
           )}
-          {res && <span className="muted" style={{ fontSize: 12 }}>NSE checked {new Date(res.checked_at).toLocaleString('en-IN')} · kept for an hour</span>}
-        </div>
+        </Flex>
       )}
     </Drawer>
   )
@@ -472,58 +482,55 @@ const STEP: Record<Job['stage'], number> = { queued: 0, listing: 0, downloading:
 function DownloadPanel({ row, job, newFiles, checked, storage, onDownload }: {
   row: ListedRow; job?: Job; newFiles: number; checked: boolean; storage: boolean; onDownload: () => void
 }) {
+  const { token } = theme.useToken()
   const active = isActive(job)
   if (job && (active || job.stage === 'done' || job.stage === 'failed')) {
     const failedAt = job.stage === 'failed' ? (job.total ? (job.done < job.total ? 1 : 2) : 0) : undefined
+    const status = job.stage === 'done' ? 'Downloaded' : job.stage === 'failed' ? 'Download failed' : job.stage === 'queued' ? 'Queued' : 'Downloading'
     return (
-      <Card size="small" className="dl-card">
-        <div className="dl-head">
-          <b>{job.stage === 'done' ? 'Downloaded' : job.stage === 'failed' ? 'Download failed' : job.stage === 'queued' ? 'Queued' : 'Downloading'}</b>
-          <span className="muted">{job.message}</span>
-        </div>
-        <Progress percent={pct(job)} status={job.stage === 'failed' ? 'exception' : job.stage === 'done' ? 'success' : 'active'} size="small" />
-        <Steps
-          size="small" type="dot" style={{ marginTop: 10 }}
-          current={job.stage === 'failed' ? failedAt : STEP[job.stage]}
-          status={job.stage === 'failed' ? 'error' : job.stage === 'done' ? 'finish' : 'process'}
-          items={[
-            { title: 'List on NSE' },
-            { title: 'Download', content: job.total ? `${job.done}/${job.total}` : undefined },
-            { title: storage ? 'Save · ingest' : 'Ingest' },
-            { title: 'Ready' },
-          ]}
-        />
-        {job.stage === 'done' && (
-          <div className="dl-result">
-            <CheckCircleFilled style={{ color: 'var(--up)' }} />
-            <span>
-              {job.facts ? <><b>{job.facts}</b> figures{job.years.length ? ` (${fySpan(job.years)})` : ''}</> : 'No figures'}
-              {job.passages ? <> · <b>{job.passages.toLocaleString('en-IN')}</b> report passages</> : null}
-              {job.added_company ? ' · added to the company list' : ''}
-            </span>
-          </div>
-        )}
-        {job.error && <Alert type="error" showIcon title={job.error} style={{ marginTop: 10 }} />}
-        {job.failed_files > 0 && job.stage === 'done' && <Alert type="warning" showIcon style={{ marginTop: 10 }} title={`${job.failed_files} file${job.failed_files === 1 ? '' : 's'} could not be downloaded from NSE`} />}
-        {!active && (job.stage === 'failed' || newFiles > 0) && (
-          <Button style={{ marginTop: 10 }} icon={<ReloadOutlined />} onClick={onDownload}>Try again</Button>
-        )}
+      <Card size="small" title={status} extra={!active && (job.stage === 'failed' || newFiles > 0) && <Button size="small" icon={<ReloadOutlined />} onClick={onDownload}>Try again</Button>}>
+        <Flex vertical gap="middle">
+          <Typography.Text type="secondary">{job.message}</Typography.Text>
+          <Progress percent={pct(job)} status={job.stage === 'failed' ? 'exception' : job.stage === 'done' ? 'success' : 'active'} size="small" />
+          <Steps
+            size="small"
+            current={job.stage === 'failed' ? failedAt : STEP[job.stage]}
+            status={job.stage === 'failed' ? 'error' : job.stage === 'done' ? 'finish' : 'process'}
+            items={[
+              { title: 'List on NSE' },
+              { title: 'Download', content: job.total ? `${job.done}/${job.total}` : undefined },
+              { title: storage ? 'Save · ingest' : 'Ingest' },
+              { title: 'Ready' },
+            ]}
+          />
+          {job.stage === 'done' && (
+            <Space size="small">
+              <CheckCircleFilled style={{ color: token.colorSuccess }} />
+              <Typography.Text>
+                {job.facts ? <><Typography.Text strong>{job.facts}</Typography.Text> figures{job.years.length ? ` (${fySpan(job.years)})` : ''}</> : 'No figures'}
+                {job.passages ? <> · <Typography.Text strong>{job.passages.toLocaleString('en-IN')}</Typography.Text> report passages</> : null}
+                {job.added_company ? ' · added to the company list' : ''}
+              </Typography.Text>
+            </Space>
+          )}
+          {job.error && <Alert type="error" showIcon title={job.error} />}
+          {job.failed_files > 0 && job.stage === 'done' && <Alert type="warning" showIcon title={`${job.failed_files} file${job.failed_files === 1 ? '' : 's'} could not be downloaded from NSE`} />}
+        </Flex>
       </Card>
     )
   }
   const nothingNew = checked && newFiles === 0 && hasData(row)
   return (
-    <Card size="small" className="dl-card">
-      <div className="dl-head">
-        <b>{hasData(row) ? 'Get the latest filings' : 'No data held for this company yet'}</b>
-        <span className="muted">
+    <Card size="small" title={hasData(row) ? 'Get the latest filings' : 'No data held for this company yet'}>
+      <Flex vertical gap="middle" align="flex-start">
+        <Typography.Text type="secondary">
           {nothingNew ? 'Everything NSE has is already held.'
             : `Downloads every XBRL result and annual report NSE has for the last 5 years${storage ? ', saves each file to S3' : ''}, then ingests the figures and report text${row.tracked ? '' : ' (and adds the company to the tracked list)'}.`}
-        </span>
-      </div>
-      <Button type="primary" icon={<DownloadOutlined />} onClick={onDownload} disabled={nothingNew} style={{ marginTop: 10 }}>
-        {checked && newFiles ? `Download ${newFiles} new file${newFiles === 1 ? '' : 's'}${storage ? ' to S3' : ''}` : `Download${storage ? ' to S3' : ''} & ingest`}
-      </Button>
+        </Typography.Text>
+        <Button type="primary" icon={<DownloadOutlined />} onClick={onDownload} disabled={nothingNew}>
+          {checked && newFiles ? `Download ${newFiles} new file${newFiles === 1 ? '' : 's'}${storage ? ' to S3' : ''}` : `Download${storage ? ' to S3' : ''} and ingest`}
+        </Button>
+      </Flex>
     </Card>
   )
 }
@@ -534,36 +541,37 @@ function ReportsList({ row, job, onEmbed }: { row: ListedRow; job: EmbedJob | nu
   const live = new Map((job?.items ?? []).map((i) => [i.doc_id, i]))
   const pending = row.reports.filter((r) => r.embedded < r.passages)
   return (
-    <div>
-      <div className="dl-head" style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div className="eyebrow">Annual reports · semantic search</div>
-        {pending.length > 1 && (
-          <Button size="small" icon={<ThunderboltOutlined />} disabled={running} onClick={() => onEmbed(pending.map((r) => r.doc_id))}>
-            Embed all {pending.length}
-          </Button>
-        )}
-      </div>
-      <div className="report-list">
-        {row.reports.map((r) => {
+    <Card
+      size="small"
+      title="Annual reports · semantic search"
+      extra={pending.length > 1 && (
+        <Button size="small" icon={<ThunderboltOutlined />} disabled={running} onClick={() => onEmbed(pending.map((r) => r.doc_id))}>
+          Embed all {pending.length}
+        </Button>
+      )}
+    >
+      <Rows
+        items={row.reports}
+        rowKey={(r) => r.doc_id}
+        render={(r) => {
           const i = live.get(r.doc_id)
           const done = i && running ? i.done : r.embedded
           const total = i && running ? i.passages : r.passages
           const full = done >= total && total > 0
           return (
-            <div key={r.doc_id} className="report-row">
-              <FileTextOutlined />
-              <span className="report-name"><b>{r.fy ?? '?'}</b> annual report</span>
+            <Flex align="center" gap="middle" style={{ width: '100%' }}>
+              <Space size="small" style={{ minWidth: 140 }}><FileTextOutlined /><Typography.Text strong>{r.fy ?? '?'}</Typography.Text><Typography.Text>annual report</Typography.Text></Space>
               <Progress percent={total ? Math.round((done / total) * 100) : 0} size="small" showInfo={false}
                 status={i?.state === 'running' && running ? 'active' : full ? 'success' : 'normal'} style={{ margin: 0, flex: 1 }} />
-              <span className="num muted" style={{ fontSize: 12, minWidth: 96, textAlign: 'right' }}>{done.toLocaleString('en-IN')}/{total.toLocaleString('en-IN')}</span>
-              {full ? <Tag className="tag-up" style={{ margin: 0 }}>embedded</Tag>
-                : i && running && i.state === 'waiting' ? <Tag style={{ margin: 0 }}>queued</Tag>
-                  : i && running && i.state === 'running' ? <Tag style={{ margin: 0 }}>embedding…</Tag>
+              <Typography.Text type="secondary" style={{ minWidth: 96, textAlign: 'right' }}>{done.toLocaleString('en-IN')}/{total.toLocaleString('en-IN')}</Typography.Text>
+              {full ? <Tag color="success" style={{ margin: 0 }}>Embedded</Tag>
+                : i && running && i.state === 'waiting' ? <Tag style={{ margin: 0 }}>Queued</Tag>
+                  : i && running && i.state === 'running' ? <Tag color="processing" style={{ margin: 0 }}>Embedding</Tag>
                     : <Button size="small" icon={<ThunderboltOutlined />} disabled={running} onClick={() => onEmbed([r.doc_id])}>Embed</Button>}
-            </div>
+            </Flex>
           )
-        })}
-      </div>
-    </div>
+        }}
+      />
+    </Card>
   )
 }

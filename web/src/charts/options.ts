@@ -25,26 +25,26 @@ function tooltip(t: Tokens, extra: Record<string, unknown> = {}) {
     backgroundColor: t.surface,
     borderColor: t.rule,
     borderWidth: 1,
-    padding: [8, 11],
-    textStyle: { color: t.ink, fontFamily: t.sans, fontSize: 12.5 },
-    extraCssText: `border-radius:9px;box-shadow:0 10px 30px -12px rgba(0,0,0,${t.dark ? 0.7 : 0.18});`,
+    padding: [8, 12],
+    textStyle: { color: t.ink, fontFamily: t.sans, fontSize: 12 },
+    extraCssText: `border-radius:${t.radius}px;box-shadow:${t.shadow};`,
     ...extra,
   }
 }
 
 const row = (color: string, name: string, value: string, shape: 'sq' | 'ln' = 'sq') =>
-  `<div style="display:flex;align-items:center;gap:8px;justify-content:space-between;min-width:170px;line-height:1.9">` +
-  `<span style="display:inline-flex;align-items:center;gap:7px"><i style="display:inline-block;width:${shape === 'ln' ? 12 : 8}px;height:${shape === 'ln' ? 2 : 8}px;border-radius:2px;background:${color}"></i>${name}</span>` +
-  `<b style="font-weight:500;font-variant-numeric:tabular-nums">${value}</b></div>`
+  `<div style="display:flex;align-items:center;gap:8px;justify-content:space-between;min-width:168px;line-height:2">` +
+  `<span style="display:inline-flex;align-items:center;gap:8px"><i style="display:inline-block;width:${shape === 'ln' ? 12 : 8}px;height:${shape === 'ln' ? 2 : 8}px;border-radius:${shape === 'ln' ? 2 : 4}px;background:${color}"></i>${name}</span>` +
+  `<b style="font-weight:600;font-variant-numeric:tabular-nums">${value}</b></div>`
 
 const head = (t: Tokens, s: string) =>
-  `<div style="font-family:${t.mono};font-size:11px;letter-spacing:.06em;color:${t.muted};margin-bottom:2px">${s}</div>`
+  `<div style="font-size:12px;color:${t.muted};margin-bottom:4px">${s}</div>`
 
 function catAxis(t: Tokens, data: string[]) {
   return {
     type: 'category' as const, data,
     axisLine: { lineStyle: { color: t.axis } }, axisTick: { show: false },
-    axisLabel: { color: t.muted, fontFamily: t.mono, fontSize: 11, margin: 12 },
+    axisLabel: { color: t.muted, fontFamily: t.mono, fontSize: 12, margin: 12 },
   }
 }
 
@@ -52,7 +52,7 @@ function valAxis(t: Tokens, unit: string, extra: Record<string, unknown> = {}) {
   return {
     type: 'value' as const,
     splitNumber: 4,
-    axisLabel: { color: t.muted, fontFamily: t.mono, fontSize: 11, formatter: (v: number) => fmtAxis(v, unit) },
+    axisLabel: { color: t.muted, fontFamily: t.mono, fontSize: 12, formatter: (v: number) => fmtAxis(v, unit) },
     splitLine: { lineStyle: { color: t.grid, width: 1 } },
     axisLine: { show: false }, axisTick: { show: false },
     ...extra,
@@ -105,7 +105,7 @@ export function lineOption(t: Tokens, series: S[], unit: string, opts: { area?: 
             { offset: 0, color: hexA(s.color, single ? 0.2 : 0.1) }, { offset: 1, color: hexA(s.color, 0) }] },
         } : undefined,
         endLabel: opts.endLabels !== false ? {
-          show: true, color: t.ink2, fontFamily: t.mono, fontSize: 11,
+          show: true, color: t.ink2, fontFamily: t.mono, fontSize: 12,
           formatter: () => (single ? fmtCompact(data[lastIdx], unit) : s.label),
         } : undefined,
         labelLayout: { moveOverlap: 'shiftY' as const },
@@ -131,7 +131,7 @@ export function barOption(t: Tokens, series: S[], unit: string): EChartsOption {
       itemStyle: { color: s.color, borderRadius: [4, 4, 0, 0] },
       emphasis: { focus: 'series' as const },
       label: single && periods.length <= 10 ? {
-        show: true, position: 'top' as const, color: t.ink2, fontFamily: t.mono, fontSize: 11,
+        show: true, position: 'top' as const, color: t.ink2, fontFamily: t.mono, fontSize: 12,
         formatter: (p: { value: number | null }) => fmtCompact(p.value, unit),
       } : undefined,
       animationDelay: (i: number) => i * 70 + si * 120,
@@ -150,7 +150,7 @@ export function changeOption(t: Tokens, periods: string[], values: (number | nul
         head(t, ps[0].axisValueLabel) + row(ps[0].color as string, name, fmtChange(ps[0].value, unit)),
     }),
     xAxis: catAxis(t, periods),
-    yAxis: valAxis(t, unit === 'pp' ? 'pp' : '%', { axisLabel: { color: t.muted, fontFamily: t.mono, fontSize: 11, formatter: (v: number) => `${v}${unit === 'pp' ? '' : '%'}` } }),
+    yAxis: valAxis(t, unit === 'pp' ? 'pp' : '%', { axisLabel: { color: t.muted, fontFamily: t.mono, fontSize: 12, formatter: (v: number) => `${v}${unit === 'pp' ? '' : '%'}` } }),
     series: [{
       type: 'bar', name, barMaxWidth: 24, barCategoryGap: '45%',
       data: values.map((v) => ({
@@ -159,7 +159,7 @@ export function changeOption(t: Tokens, periods: string[], values: (number | nul
         label: { position: (v ?? 0) >= 0 ? 'top' : 'bottom' },
       })),
       label: {
-        show: true, color: t.ink2, fontFamily: t.mono, fontSize: 11,
+        show: true, color: t.ink2, fontFamily: t.mono, fontSize: 12,
         position: 'top',
         formatter: (p: { value: number | null }) => (p.value == null ? '' : fmtChange(p.value, unit)),
       },
@@ -209,7 +209,7 @@ export function waterfallOption(t: Tokens, steps: Step[], unit: string, totalCol
           },
         })),
         label: {
-          show: true, position: 'top', color: t.ink2, fontFamily: t.mono, fontSize: 10.5,
+          show: true, position: 'top', color: t.ink2, fontFamily: t.mono, fontSize: 12,
           formatter: (p: { dataIndex: number }) => {
             const s = bars[p.dataIndex].s
             const short = (v: number) => fmtCompact(v, unit).replace(/ ?Cr$/, '')   // unit is in the title
@@ -241,7 +241,7 @@ export function rankedOption(t: Tokens, items: { label: string; value: number | 
     series: [{
       type: 'bar', barMaxWidth: 20, barCategoryGap: '38%',
       data: sorted.map((i) => ({ value: i.value, name: i.label, itemStyle: { color: i.highlight === false ? hexA(i.color, 0.4) : i.color, borderRadius: [0, 4, 4, 0] } })),
-      label: { show: true, position: 'right', color: t.ink, fontFamily: t.mono, fontSize: 11.5, formatter: (p: { value: number }) => fmtCompact(p.value, unit) },
+      label: { show: true, position: 'right', color: t.ink, fontFamily: t.mono, fontSize: 12, formatter: (p: { value: number }) => fmtCompact(p.value, unit) },
       showBackground: true, backgroundStyle: { color: t.surface2, borderRadius: 4 },
       animationDelay: (i: number) => i * 90,
     }],
@@ -260,7 +260,7 @@ export function donutOption(t: Tokens, items: { label: string; value: number; co
     title: {
       text: center.value, subtext: center.label, left: 'center', top: '40%',
       textStyle: { color: t.ink, fontSize: 22, fontWeight: 600, fontFamily: t.sans },
-      subtextStyle: { color: t.muted, fontSize: 11, fontFamily: t.mono },
+      subtextStyle: { color: t.muted, fontSize: 12, fontFamily: t.mono },
       itemGap: 4,
     },
     series: [{
@@ -286,7 +286,7 @@ export function radarOption(t: Tokens, axes: { name: string; max: number; min?: 
     radar: {
       indicator: axes.map((a) => ({ name: a.name, max: a.max, min: a.min ?? 0 })),
       radius: '62%', center: ['50%', '52%'], splitNumber: 4, shape: 'polygon', nameGap: 10,
-      axisName: { color: t.ink2, fontSize: 11.5, fontFamily: t.sans },
+      axisName: { color: t.ink2, fontSize: 12, fontFamily: t.sans },
       splitLine: { lineStyle: { color: t.grid } },
       splitArea: { areaStyle: { color: ['transparent'] } },
       axisLine: { lineStyle: { color: t.grid } },
@@ -322,14 +322,14 @@ export function heatmapOption(t: Tokens, xs: string[], ys: string[], cells: [num
       formatter: (p: { value: [number, number, number | string, number | null]; color: string }) =>
         head(t, xs[p.value[0]]) + row(p.color, ys[p.value[1]], p.value[3] == null ? 'no data' : opts.fmt(p.value[3])),
     }),
-    xAxis: { type: 'category', data: xs, splitArea: { show: false }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: t.muted, fontFamily: t.mono, fontSize: 11, interval: 0 } },
+    xAxis: { type: 'category', data: xs, splitArea: { show: false }, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: t.muted, fontFamily: t.mono, fontSize: 12, interval: 0 } },
     yAxis: { type: 'category', data: ys, inverse: true, axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: t.ink2, fontSize: 12, interval: 0 } },
     visualMap: {
       type: 'continuous', orient: 'horizontal', left: 'center', bottom: 0, itemWidth: 10, itemHeight: 160,
       min: opts.diverging ? -absMax : lo, max: opts.diverging ? absMax : hi, calculable: false,
       text: [`${opts.diverging ? '≥ ' : ''}${opts.fmt(opts.diverging ? absMax : hi)}`, `${opts.diverging ? '≤ ' : ''}${opts.fmt(opts.diverging ? -absMax : lo)}`],
       dimension: 2,
-      textStyle: { color: t.muted, fontFamily: t.mono, fontSize: 10.5 },
+      textStyle: { color: t.muted, fontFamily: t.mono, fontSize: 12 },
       inRange: { color: opts.diverging ? [t.divNeg, t.divMid, t.divPos] : [t.seqLo, t.seqHi] },
     },
     series: [{
@@ -338,11 +338,11 @@ export function heatmapOption(t: Tokens, xs: string[], ys: string[], cells: [num
         if (c[2] == null) return [c[0], c[1], '-', null]
         // saturated cells take white text, light ones ink (never the data colour)
         const strong = opts.diverging ? Math.abs(clamp(c[2])) / absMax > 0.55 : hi > lo && (c[2] - lo) / (hi - lo) > 0.55
-        return { value: [c[0], c[1], clamp(c[2]), c[2]], label: { color: strong ? '#ffffff' : t.ink, textBorderWidth: 0 } }
+        return { value: [c[0], c[1], clamp(c[2]), c[2]], label: { color: strong ? t.onSolid : t.ink, textBorderWidth: 0 } }
       }),
       itemStyle: { borderColor: t.surface, borderWidth: 3, borderRadius: 6 },
       label: {
-        show: true, fontFamily: t.mono, fontSize: 11.5,
+        show: true, fontFamily: t.mono, fontSize: 12,
         formatter: (p: { value: [number, number, number | string, number | null] }) => (p.value[3] != null ? opts.fmt(p.value[3]) : '–'),
         color: t.ink,
       },
@@ -358,13 +358,13 @@ export function slopeOption(t: Tokens, series: S[], from: string, to: string, un
     ...base(t),
     grid: { left: 110, right: 110, top: 24, bottom: 8, containLabel: false },
     tooltip: axisTip(t, unit, 'ln'),
-    xAxis: { ...catAxis(t, [from, to]), boundaryGap: false, axisLine: { show: false }, position: 'top', axisLabel: { color: t.ink2, fontFamily: t.mono, fontSize: 11.5 } },
+    xAxis: { ...catAxis(t, [from, to]), boundaryGap: false, axisLine: { show: false }, position: 'top', axisLabel: { color: t.ink2, fontFamily: t.mono, fontSize: 12 } },
     yAxis: { type: 'value', scale: true, show: false },
     series: series.map((s) => {
       const a = s.points.find((p) => p.period === from)?.value ?? null
       const b = s.points.find((p) => p.period === to)?.value ?? null
       const lbl = (pos: 'left' | 'right') => ({
-        show: true, position: pos, distance: 10, color: t.ink2, fontFamily: t.mono, fontSize: 11,
+        show: true, position: pos, distance: 10, color: t.ink2, fontFamily: t.mono, fontSize: 12,
         formatter: () => (pos === 'left' ? `${s.label}  ${fmtCompact(a, unit)}` : `${fmtCompact(b, unit)}  ${pctDelta(a, b, unit)}`),
       })
       return {

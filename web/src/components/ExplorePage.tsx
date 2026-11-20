@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Alert, Card, Col, Row, Segmented, Select, Skeleton, Tag, Tooltip } from 'antd'
+import {
+  Alert, Badge, Card, Col, Descriptions, Divider, Flex, Row, Segmented, Select, Skeleton, Space, Statistic, Tag, Tooltip, Typography,
+  theme,
+} from 'antd'
 import { api, type DataView } from '../lib/api'
 import { fmtChange, fmtCompact, fmtValue } from '../lib/format'
 import { useMeta } from '../lib/meta'
@@ -7,12 +10,17 @@ import { seriesColor, useTokens } from '../lib/theme'
 import { ChartPanel } from '../charts/ChartPanel'
 import { EChart } from '../charts/EChart'
 import { donutOption, heatmapOption, radarOption, sparkOption, waterfallOption, type Step } from '../charts/options'
-import { CountUp, Delta, Legend, Rise } from './bits'
+import { PageHeader } from './Chrome'
+import { Delta, Legend } from './bits'
 
 const RATIOS = ['net_margin', 'pbt_margin', 'effective_tax_rate', 'employee_cost_ratio']
 const GROWTH = ['revenue_from_operations', 'total_income', 'profit_before_tax', 'net_profit', 'eps_basic', 'employee_expense', 'total_assets', 'total_equity']
 const BRIDGE = ['revenue_from_operations', 'other_income', 'employee_expense', 'depreciation_amortisation', 'finance_costs', 'total_expenses', 'profit_before_tax', 'tax_expense', 'net_profit']
 const SIZE_METRICS = ['revenue_from_operations', 'net_profit', 'profit_before_tax', 'total_assets', 'total_equity', 'employee_expense']
+
+// a chart tells at most 8 companies apart (the preset palette); the compare API takes 8 too
+const MAX_PICK = 8
+const DEFAULT_PICK = 5
 
 const fyNum = (fy: string) => parseInt(fy.replace(/\D/g, ''), 10)
 const prevFy = (fy: string) => `FY${String(fyNum(fy) - 1).padStart(2, '0')}`
@@ -33,7 +41,7 @@ function useLoad<T>(key: string, load: () => Promise<T>): { data: T | null; erro
 export function ExplorePage() {
   const { loaded, metricLabel, metrics } = useMeta()
   const allFys = useMemo(() => [...new Set(loaded.flatMap((c) => c.fys))].sort((a, b) => fyNum(a) - fyNum(b)), [loaded])
-  const [picked, setPicked] = useState<string[]>(() => loaded.map((c) => c.ticker))
+  const [picked, setPicked] = useState<string[]>(() => loaded.slice(0, DEFAULT_PICK).map((c) => c.ticker))
   const [fy, setFy] = useState(() => allFys[allFys.length - 1] ?? 'FY26')
   const [sizeMetric, setSizeMetric] = useState('revenue_from_operations')
   const [ratio, setRatio] = useState('net_margin')
@@ -41,60 +49,58 @@ export function ExplorePage() {
   const tickers = loaded.map((c) => c.ticker).filter((t) => picked.includes(t))
   const ratioOptions = metrics.filter((m) => m.kind === 'ratio')
 
-  const toggle = (t: string) => setPicked((p) => (p.includes(t) ? (p.length > 1 ? p.filter((x) => x !== t) : p) : [...p, t]))
+  const toggle = (t: string) => setPicked((p) => (p.includes(t) ? (p.length > 1 ? p.filter((x) => x !== t) : p) : p.length < MAX_PICK ? [...p, t] : p))
   const bridgeTicker = tickers.includes(bridgeCo) ? bridgeCo : tickers[0]
 
   return (
-    <div className="page wide" style={{ width: '100%' }}>
-      <div className="toolbar" role="toolbar" aria-label="Filters">
-        <div className="toolbar-group">
-          <span className="eyebrow">Companies</span>
-          {loaded.map((c) => (
-            <CompanyToggle key={c.ticker} ticker={c.ticker} name={c.name} on={picked.includes(c.ticker)} onClick={() => toggle(c.ticker)} />
-          ))}
-        </div>
-        <div className="toolbar-group" style={{ marginLeft: 'auto' }}>
-          <span className="eyebrow">Fiscal year</span>
-          <Segmented size="small" value={fy} onChange={setFy} options={allFys.slice(1)} aria-label="Fiscal year" />
-        </div>
-      </div>
+    <div style={{ maxWidth: 1400, margin: '0 auto' }}>
+      <PageHeader title="Explore" description="Size, growth, margins and cost structure across the companies you cover" />
+      <Flex vertical gap="middle">
+        <Card size="small">
+          <Flex justify="space-between" align="center" gap="middle" wrap role="toolbar" aria-label="Filters">
+            <Flex align="center" gap="small" wrap>
+              <Typography.Text type="secondary">Companies</Typography.Text>
+              {loaded.map((c) => (
+                <CompanyToggle
+                  key={c.ticker} ticker={c.ticker} name={c.name} picked={tickers}
+                  full={!picked.includes(c.ticker) && tickers.length >= MAX_PICK} onClick={() => toggle(c.ticker)}
+                />
+              ))}
+              {loaded.length > MAX_PICK && <Typography.Text type="secondary">{tickers.length} of {MAX_PICK} max</Typography.Text>}
+            </Flex>
+            <Flex align="center" gap="small">
+              <Typography.Text type="secondary">Fiscal year</Typography.Text>
+              <Segmented value={fy} onChange={setFy} options={allFys.slice(1)} aria-label="Fiscal year" />
+            </Flex>
+          </Flex>
+        </Card>
 
-      <div className="kpi-grid">
-        {tickers.map((t, i) => <Kpi key={t} ticker={t} fy={fy} i={i} />)}
-      </div>
+        <Row gutter={[16, 16]}>
+          {tickers.map((t) => <Col key={t} xs={24} sm={12} xl={8} xxl={6}><Kpi ticker={t} fy={fy} set={tickers} /></Col>)}
+        </Row>
 
-      <Row gutter={[14, 14]}>
-        <Col xs={24} xl={14}>
-          <Rise className="panel" i={1}><IndexedGrowth tickers={tickers} metric={sizeMetric} setMetric={setSizeMetric} /></Rise>
-        </Col>
-        <Col xs={24} xl={10}>
-          <Rise className="panel" i={2}><RatioRadar tickers={tickers} fy={fy} /></Rise>
-        </Col>
-        <Col xs={24} xl={16}>
-          <Rise className="panel" i={3}><ProfitBridge ticker={bridgeTicker} tickers={tickers} setTicker={setBridgeCo} fy={fy} /></Rise>
-        </Col>
-        <Col xs={24} xl={8}>
-          <Rise className="panel" i={4}><ShareDonut tickers={tickers} fy={fy} metric={sizeMetric} /></Rise>
-        </Col>
-        <Col xs={24} xl={14}>
-          <Rise className="panel" i={5}>
+        <Row gutter={[16, 16]}>
+          <Col xs={24} xl={14}><IndexedGrowth tickers={tickers} metric={sizeMetric} setMetric={setSizeMetric} /></Col>
+          <Col xs={24} xl={10}><RatioRadar tickers={tickers} fy={fy} /></Col>
+          <Col xs={24} xl={16}><ProfitBridge ticker={bridgeTicker} tickers={tickers} setTicker={setBridgeCo} fy={fy} /></Col>
+          <Col xs={24} xl={8}><ShareDonut tickers={tickers} fy={fy} metric={sizeMetric} /></Col>
+          <Col xs={24} xl={14}>
             <RatioOverTime tickers={tickers} ratio={ratio} setRatio={setRatio} options={ratioOptions.map((m) => ({ id: m.id, label: m.label }))} />
-          </Rise>
-        </Col>
-        <Col xs={24} xl={10}>
-          <Rise className="panel" i={6}><GrowthHeatmap tickers={tickers} fy={fy} label={metricLabel} /></Rise>
-        </Col>
-      </Row>
+          </Col>
+          <Col xs={24} xl={10}><GrowthHeatmap tickers={tickers} fy={fy} label={metricLabel} /></Col>
+        </Row>
+      </Flex>
     </div>
   )
 }
 
-function CompanyToggle({ ticker, name, on, onClick }: { ticker: string; name: string; on: boolean; onClick: () => void }) {
+function CompanyToggle({ ticker, name, picked, full, onClick }: { ticker: string; name: string; picked: string[]; full: boolean; onClick: () => void }) {
   const t = useTokens()
+  const on = picked.includes(ticker)
   return (
-    <Tooltip title={name}>
-      <Tag.CheckableTag checked={on} onChange={onClick} className="co-tag">
-        <span className="swatch round" style={{ background: seriesColor(t, ticker, 0), opacity: on ? 1 : 0.4 }} />{ticker}
+    <Tooltip title={full ? `${name}. Up to ${MAX_PICK} companies at once: deselect one first` : name}>
+      <Tag.CheckableTag checked={on} onChange={onClick} disabled={full}>
+        <Space size={4}><Badge color={on ? seriesColor(t, ticker, 0, picked) : t.muted} />{ticker}</Space>
       </Tag.CheckableTag>
     </Tooltip>
   )
@@ -102,18 +108,33 @@ function CompanyToggle({ ticker, name, on, onClick }: { ticker: string; name: st
 
 /** A dashboard panel: antd Card with title, optional subtitle and a control on the right. */
 function Panel({ title, sub, extra, children }: { title: string; sub?: string; extra?: ReactNode; children: ReactNode }) {
+  const { token } = theme.useToken()
   return (
-    <Card className="panel" title={<>{title}{sub && <small>{sub}</small>}</>} extra={extra} styles={{ body: { paddingTop: 12 } }}>
-      {children}
+    <Card
+      style={{ height: '100%' }}
+      title={
+        <Flex vertical>
+          <Typography.Text strong>{title}</Typography.Text>
+          {sub && <Typography.Text type="secondary" style={{ fontSize: token.fontSizeSM, fontWeight: 400 }}>{sub}</Typography.Text>}
+        </Flex>
+      }
+      extra={extra}
+    >
+      <Flex vertical gap="small">{children}</Flex>
     </Card>
   )
+}
+
+function Caption({ children }: { children: ReactNode }) {
+  const { token } = theme.useToken()
+  return <Typography.Text type="secondary" style={{ fontSize: token.fontSizeSM }}>{children}</Typography.Text>
 }
 
 const ErrorNote = ({ msg }: { msg: string }) => <Alert type="error" showIcon title={msg} />
 const Loading = () => <Skeleton active paragraph={{ rows: 6 }} title={false} />
 
 // ---- KPI card -----------------------------------------------------------------------------
-function Kpi({ ticker, fy, i }: { ticker: string; fy: string; i: number }) {
+function Kpi({ ticker, fy, set }: { ticker: string; fy: string; set: string[] }) {
   const t = useTokens()
   const { companyName } = useMeta()
   const { data } = useLoad(`kpi-${ticker}`, () => Promise.all([
@@ -122,41 +143,54 @@ function Kpi({ ticker, fy, i }: { ticker: string; fy: string; i: number }) {
     api.trend({ ticker, metric: 'net_margin' }),
     api.trend({ ticker, metric: 'eps_basic' }),
   ]))
-  const color = seriesColor(t, ticker, 0)
+  const color = seriesColor(t, ticker, 0, set)
   const at = (d: DataView | undefined, p: string) => (d?.table?.rows.find((r) => r.period === p)?.value as number | null) ?? null
   const [rev, np, nm, eps] = data ?? []
   const r = at(rev, fy), rp = at(rev, prevFy(fy))
   const growth = r != null && rp ? ((r - rp) / rp) * 100 : null
   const points = rev?.chart?.series[0]?.points ?? []
+  const lakh = r != null && r >= 1e5
+  const nmNow = at(nm, fy), nmPrev = at(nm, prevFy(fy))
   return (
-    <Rise i={i}>
-      <Card className="kpi" hoverable>
-        <div className="kpi-head">
-          <span className="kpi-name"><span className="swatch round" style={{ background: color }} />{companyName(ticker)}</span>
-          <Tag style={{ margin: 0 }} className="mono">{ticker}</Tag>
-        </div>
-        {!data ? <Skeleton active paragraph={{ rows: 3 }} title={false} style={{ marginTop: 14 }} /> : (
-          <>
-            <div className="eyebrow" style={{ marginTop: 12 }}>Revenue · {fy}</div>
-            <div className="kpi-row">
-              <span className="num" style={{ fontSize: 26, fontWeight: 600, letterSpacing: '-0.02em' }}>
-                {r == null ? '–' : r >= 1e5
-                  ? <>₹<CountUp value={r / 1e5} format={(v) => v.toFixed(2)} /><small className="muted" style={{ fontSize: 13, marginLeft: 4 }}>L Cr</small></>
-                  : <>₹<CountUp value={r} format={(v) => new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(v)} /><small className="muted" style={{ fontSize: 13, marginLeft: 4 }}>Cr</small></>}
-              </span>
-              <Delta value={growth} />
-            </div>
-            {points.length > 1 && <EChart height={70} option={sparkOption(t, points, color, 'INR crore', fy)} label={`${ticker} revenue history`} />}
-            <div className="kpi-mini">
-              <div>Net profit <b>{fmtCompact(at(np, fy), 'INR crore')}</b></div>
-              <div>Net margin <b>{fmtValue(at(nm, fy), '%')}</b></div>
-              <div>EPS <b>{fmtValue(at(eps, fy), 'INR')}</b></div>
-              <div>Margin Δ <b>{at(nm, fy) != null && at(nm, prevFy(fy)) != null ? fmtChange((at(nm, fy) as number) - (at(nm, prevFy(fy)) as number), 'pp') : '–'}</b></div>
-            </div>
-          </>
-        )}
-      </Card>
-    </Rise>
+    <Card
+      size="small"
+      style={{ height: '100%' }}
+      title={
+        <Flex align="center" gap="small" style={{ minWidth: 0 }}>
+          <Badge color={color} />
+          <Typography.Text strong ellipsis={{ tooltip: companyName(ticker) }} style={{ minWidth: 0 }}>{companyName(ticker)}</Typography.Text>
+        </Flex>
+      }
+      extra={<Tag style={{ margin: 0 }}>{ticker}</Tag>}
+    >
+      {!data ? <Skeleton active paragraph={{ rows: 4 }} title={false} /> : (
+        <Flex vertical gap="small">
+          <Flex justify="space-between" align="flex-end">
+            <Statistic
+              title={`Revenue · ${fy}`}
+              value={r == null ? '–' : lakh ? r / 1e5 : r}
+              precision={lakh ? 2 : 0}
+              prefix={r == null ? undefined : '₹'}
+              suffix={r == null ? undefined : lakh ? 'L Cr' : 'Cr'}
+            />
+            <Delta value={growth} />
+          </Flex>
+          {points.length > 1 && <EChart height={64} option={sparkOption(t, points, color, 'INR crore', fy)} label={`${ticker} revenue history`} />}
+          <Divider style={{ margin: 0 }} />
+          <Descriptions
+            size="small"
+            column={2}
+            colon={false}
+            items={[
+              { key: 'np', label: 'Net profit', children: fmtCompact(at(np, fy), 'INR crore') },
+              { key: 'nm', label: 'Net margin', children: fmtValue(nmNow, '%') },
+              { key: 'eps', label: 'EPS', children: fmtValue(at(eps, fy), 'INR') },
+              { key: 'nmd', label: 'Margin Δ', children: nmNow != null && nmPrev != null ? fmtChange(nmNow - nmPrev, 'pp') : '–' },
+            ]}
+          />
+        </Flex>
+      )}
+    </Card>
   )
 }
 
@@ -194,14 +228,14 @@ function RatioRadar({ tickers, fy }: { tickers: string[]; fy: string }) {
       const hi = Math.max(...vals, 1), lo = Math.min(...vals, hi)
       return { name: short[m] ?? metricLabel(m), max: Math.ceil((hi + (hi - lo) * 0.25 + 1) / 5) * 5, min: Math.max(0, Math.floor((lo - (hi - lo) * 0.6 - 2) / 5) * 5) }
     })
-    const series = tickers.map((tk) => ({ label: tk, color: seriesColor(t, tk, 0), values: RATIOS.map((_, i) => (row(data[i])[tk] as number | null) ?? null) }))
+    const series = tickers.map((tk) => ({ label: tk, color: seriesColor(t, tk, 0, tickers), values: RATIOS.map((_, i) => (row(data[i])[tk] as number | null) ?? null) }))
     return radarOption(t, axes, series, '%')
   }, [data, tickers, t, metricLabel])
   return (
     <Panel title="Ratio profile" sub={`${fy} · % of revenue / PBT`}>
-      <Legend items={tickers.map((tk) => ({ label: tk, color: seriesColor(t, tk, 0) }))} />
+      <Legend items={tickers.map((tk) => ({ label: tk, color: seriesColor(t, tk, 0, tickers) }))} />
       {error ? <ErrorNote msg={error} /> : option ? <EChart option={option} height={300} label={`Four ratios for ${tickers.join(', ')} in ${fy}`} /> : <Loading />}
-      <div className="caption">Each axis has its own range (not from zero), so gaps are exaggerated; hover for exact values</div>
+      <Caption>Each axis has its own range (not from zero), so gaps are exaggerated; hover for exact values</Caption>
     </Panel>
   )
 }
@@ -239,12 +273,12 @@ function ProfitBridge({ ticker, tickers, setTicker, fy }: { ticker: string; tick
   return (
     <Panel
       title="From revenue to net profit" sub={`${fy} · ₹ crore`}
-      extra={<Segmented size="small" value={ticker} onChange={setTicker} options={tickers} aria-label="Company" />}
+      extra={<Select size="small" value={ticker} onChange={setTicker} options={tickers.map((tk) => ({ value: tk, label: tk }))} style={{ width: 160 }} aria-label="Company" />}
     >
       {error ? <ErrorNote msg={error} />
-        : steps ? <EChart option={waterfallOption(t, steps, 'INR crore', seriesColor(t, ticker, 0))} height={320} label={`${ticker} ${fy} profit bridge`} />
+        : steps ? <EChart option={waterfallOption(t, steps, 'INR crore', seriesColor(t, ticker, 0, tickers))} height={320} label={`${ticker} ${fy} profit bridge`} />
           : data ? <Alert type="info" showIcon title={`Not every line item is filed for ${ticker} ${fy}, so the bridge is not drawn.`} /> : <Loading />}
-      <div className="caption">Blue adds, red subtracts. “One-offs” and “Other items” are gaps between filed totals (exceptional items, discontinued operations), shown rather than hidden.</div>
+      <Caption>Blue adds, red subtracts. “One-offs” and “Other items” are gaps between filed totals (exceptional items, discontinued operations), shown rather than hidden.</Caption>
     </Panel>
   )
 }
@@ -255,13 +289,13 @@ function ShareDonut({ tickers, fy, metric }: { tickers: string[]; fy: string; me
   const { metricLabel } = useMeta()
   const { data, error } = useLoad(`share-${tickers.join()}-${fy}-${metric}`, () => api.compare({ tickers, metrics: [metric], fys: [fy] }))
   const row = data?.table?.rows[0]
-  const items = row ? tickers.map((tk) => ({ label: tk, value: (row[tk] as number | null) ?? 0, color: seriesColor(t, tk, 0) })).filter((i) => i.value > 0) : []
+  const items = row ? tickers.map((tk) => ({ label: tk, value: (row[tk] as number | null) ?? 0, color: seriesColor(t, tk, 0, tickers) })).filter((i) => i.value > 0) : []
   const total = items.reduce((a, i) => a + i.value, 0)
   return (
     <Panel title="Share of the group" sub={`${metricLabel(metric)} · ${fy}`}>
       <Legend items={items.map((i) => ({ label: `${i.label} ${total ? ((i.value / total) * 100).toFixed(1) : 0}%`, color: i.color }))} />
       {error ? <ErrorNote msg={error} />
-        : items.length > 0 ? <EChart option={donutOption(t, items, { value: fmtCompact(total, 'INR crore'), label: 'COMBINED' })} height={290} label={`Share of combined ${metricLabel(metric)}`} /> : <Loading />}
+        : items.length > 0 ? <EChart option={donutOption(t, items, { value: fmtCompact(total, 'INR crore'), label: 'Combined' })} height={290} label={`Share of combined ${metricLabel(metric)}`} /> : <Loading />}
     </Panel>
   )
 }
@@ -301,7 +335,7 @@ function GrowthHeatmap({ tickers, fy, label }: { tickers: string[]; fy: string; 
   return (
     <Panel title="Year-on-year growth" sub={`${prevFy(fy)} → ${fy}`}>
       {error ? <ErrorNote msg={error} /> : option ? <EChart option={option} height={GROWTH.length * 40 + 70} label={`Growth ${prevFy(fy)} to ${fy} by metric and company`} /> : <Loading />}
-      <div className="caption">Blue = growth, red = decline; colour scale is symmetric around zero</div>
+      <Caption>Blue = growth, red = decline; colour scale is symmetric around zero</Caption>
     </Panel>
   )
 }

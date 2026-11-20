@@ -6,7 +6,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   build: {
-    chunkSizeWarningLimit: 1200,   // antd 6 (~25 components) minifies to ~1.1 MB, ~360 KB gzipped
+    chunkSizeWarningLimit: 1300,   // antd 6 (~35 components) minifies to ~1.26 MB, ~400 KB gzipped
     rollupOptions: {
       output: {
         // group only the modules actually imported (naming packages here would pull in every icon)

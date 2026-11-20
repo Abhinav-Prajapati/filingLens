@@ -4,8 +4,9 @@
     "TCS revenue FY24"                             + "and Infosys?"     -> compare both
     "TCS revenue FY24"                             + "what about FY25"  -> both years
 
-Only short messages (up to 6 words) that are not complete questions on their own are joined:
-"Infosys net margin FY25" after anything is a new question. The answer says how it was read.
+Only short messages (up to 6 words) are joined, and never when they are complete questions of
+their own ("Infosys net margin FY25") or name a different company than the previous question
+("tcs growth reason" after a Titan question). The answer says how it was read.
 """
 from __future__ import annotations
 
@@ -32,15 +33,18 @@ def combine(previous: Previous | None, text: str, reg: Registry) -> tuple[str, s
     if previous is None or not previous.question.strip() or not text.strip():
         return text, None
     reply = text.strip().rstrip("?.! ")
-    if previous.tool == "ask_user":
-        return (f"{previous.question.strip()} ({reply})",
-                f"read as your answer to the question asked: “{previous.question.strip()}”")
     t = _norm(text)
     if len(t.split()) > MAX_WORDS:
         return text, None
     companies, metrics, years = find_companies(t, reg), find_metrics(t, reg), find_years(t)
     if companies and metrics:
         return text, None                                # a complete question of its own
+    before = find_companies(_norm(previous.question), reg)
+    if companies and before and set(companies) != set(before) and not FOLLOW.match(t):
+        return text, None             # another company, no "and"/"what about": a new question
+    if previous.tool == "ask_user":
+        return (f"{previous.question.strip()} ({reply})",
+                f"read as your answer to the question asked: “{previous.question.strip()}”")
     if not (companies or metrics or years.get("fys") or years.get("last_n")
             or FOLLOW.match(t)):
         return text, None                                # "thanks", "ok"...

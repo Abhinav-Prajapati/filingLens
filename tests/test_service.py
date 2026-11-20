@@ -141,6 +141,8 @@ def test_model_quarter_guess_is_overridden(ctx):
 
 
 LISTED = [ListedCompany(s, n, "") for s, n in [
+    ("IGIL", "International Gemological Institute Limited"),
+    ("NECCLTD", "North Eastern Carrying Corporation Limited"),
     ("HCLTECH", "HCL Technologies Limited"), ("HCL-INSYS", "HCL Infosystems Limited"),
     ("TECHM", "Tech Mahindra Limited"), ("TCS", "Tata Consultancy Services Limited"),
     ("TATASTEEL", "Tata Steel Limited"), ("RELIANCE", "Reliance Industries Limited"),
@@ -157,6 +159,10 @@ GUARD = CompanyGuard(LISTED, REG, question_words(REG))
     ("What is the net profit of Infosys?", []),
     ("Which company grew revenue faster, Infosys or TCS?", []),
     ("Net revenue trend for TCS", []),
+    # ordinary capitalised words that begin listed names are not companies (regression:
+    # "International Business ... North America" was read as three uncovered companies)
+    ("What is Infosys doing in International Business in North America?", []),
+    ("TCS growth in North America", []),
 ])
 def test_guard_finds_uncovered_companies(q, found):
     assert [c.symbol for c in GUARD.find(q)] == found

@@ -14,6 +14,8 @@ echarts.use([
   DataZoomComponent, SVGRenderer,
 ])
 
+const HEIGHT = { sm: 120, md: 320, lg: 384 } as const
+
 interface Props {
   option: EChartsOption
   size?: 'sm' | 'md' | 'lg'
@@ -42,12 +44,6 @@ export function EChart({ option, size, height, label }: Props) {
   }, [option])
 
   return (
-    <div
-      ref={ref}
-      role="img"
-      aria-label={label}
-      className={`chart ${size ?? ''}`}
-      style={height ? { height } : undefined}
-    />
+    <div ref={ref} role="img" aria-label={label} style={{ width: '100%', height: height ?? HEIGHT[size ?? 'md'] }} />
   )
 }

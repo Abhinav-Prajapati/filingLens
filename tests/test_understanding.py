@@ -55,6 +55,15 @@ def test_year_ranges(q, fys):
 
 
 # ---- follow-ups --------------------------------------------------------------------------------
+def test_a_new_question_after_a_clarification_stands_alone():
+    """Regression: every message after a clarifying question used to be glued onto it."""
+    prev = Previous("what is Infosys doing in North America", "ask_user")
+    assert combine(prev, "tcs growth reason", REG) == ("tcs growth reason", None)
+    assert combine(prev, "TCS net profit FY24", REG)[1] is None          # complete question
+    assert combine(prev, "fy24", REG)[0] == "what is Infosys doing in North America (fy24)"
+    assert combine(Previous("TCS revenue FY24", "get_value"), "and Infosys?", REG)[1]
+
+
 def test_answer_to_a_clarifying_question_continues_it():
     q, note = combine(Previous("why did net profit fall from FY23 to FY24", "ask_user"),
                       "Infosys", REG)
@@ -163,3 +172,20 @@ def test_figures_only_answer_saying_no_reason_needs_no_citation(ctx):
                    "state the reason.")])
     r = AnswerService(ctx, llm).answer("Why did Infosys net profit rise from FY23 to FY24?")
     assert r.answer.used_llm and "do not state the reason" in r.answer.text
+
+
+def test_topic_outside_the_metrics_is_searched_when_the_model_asks_back(ctx):
+    """Small models answer "I don't have data on debentures" for topics that are not stored
+    figures; the question names a covered company, so its reports are searched instead."""
+    TextRepo(ctx.con).replace("ar24d", [], [Chunk(
+        "d1", "ar24d", "INFY", "FY24", "annual_report", "none", "text", "notes", 70, 70,
+        "Redeemable non-convertible debentures of face value 1,00,000 each were issued.",
+        "INFY | Annual Report FY24 | notes | page 70")])
+    ask_back = {"question": "I don't have data on debentures. Debt instead?"}
+    llm = FakeLLM([LLMReply(tool_calls=[ToolCall("ask_user", ask_back, "c1",
+                                                 json.dumps(ask_back))]),
+                   "Infosys issued redeemable non-convertible debentures [p.70]."])
+    r = AnswerService(ctx, llm).answer("infosys redeemable non convertible debentures fy24")
+    assert r.tool == "search_reports" and r.result.citations[0]["page"] == 70
+    assert r.answer.text and "asked back" in r.notes[0]
+    assert r.args["query"] == "redeemable non convertible debentures" and r.args["fy"] == "FY24"

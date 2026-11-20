@@ -122,6 +122,9 @@ RULES:
 5. "growth", "grew", "badha", "faster" when comparing companies: compare with
    normalise "index100" and no fys (growth needs several years).
 6. search_reports query: a short English phrase with the key terms, even for Hinglish questions.
+   Anything about a listed company that is NOT one of the metrics above (debentures, borrowings
+   detail, dividends, auditors, employees, subsidiaries, segments, ESG, any note to the accounts)
+   is in the annual reports: call search_reports for it. Never reply that such data is missing.
 7. If you cannot call tools natively, reply with ONLY this JSON and nothing else:
    {{"name": "<tool>", "arguments": {{...}}}}
 
