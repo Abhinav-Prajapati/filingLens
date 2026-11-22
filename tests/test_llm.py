@@ -245,6 +245,19 @@ def test_text_answer_must_cite_retrieved_pages_and_copy_numbers(ctx):
         assert a.text is None and why in a.rejected, reply
 
 
+def test_cited_reason_drops_the_no_reason_line(ctx):
+    from filingLens.llm.answer import NO_REASON, compose_answer
+    res = _search_result(ctx)
+    figures = ask("TCS revenue pichle 2 saal", FakeLLM([native("get_trend", {
+        "ticker": "TCS", "metric": "revenue", "last_n_years": 2})]), ctx).result
+    a = compose_answer("Why did TCS attrition change?", res, FakeLLM(
+        [f"Attrition was 13.3% in FY 2025 [p.43]. {NO_REASON}"]), figures=figures)
+    assert a.text == "Attrition was 13.3% in FY 2025 [p.43]." and a.pages == [43]
+    plain = compose_answer("Why did TCS attrition change?", res, FakeLLM(
+        [f"Revenue rose from 2,25,458 to 2,40,893 crore. {NO_REASON}"]), figures=figures)
+    assert plain.text and plain.text.endswith(NO_REASON)       # no citation: the line stays
+
+
 def test_data_summary_allows_rounding_but_not_new_numbers(ctx):
     from filingLens.llm.answer import compose_answer, evidence
     res = ask("TCS revenue pichle 2 saal", FakeLLM([native("get_trend", {

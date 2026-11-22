@@ -159,6 +159,10 @@ def compose_answer(question: str, res: ToolResult, llm: LLMClient,
     except Exception as e:                       # noqa: BLE001 - fall back to raw evidence
         return Answer(used_llm=True, rejected=f"LLM request failed: {type(e).__name__}")
     text = _THINK.sub("", reply.content or "").strip()
+    if fig and _CITE.search(text):
+        # a cited reason plus "the pages do not state the reason" contradicts itself: small
+        # models append the fallback line by habit; the cited reason stands
+        text = re.sub(r"\s*" + re.escape(NO_REASON), "", text, flags=re.IGNORECASE).strip()
     if not text or NOT_FOUND in text:
         return Answer(used_llm=True, rejected="the sources do not answer the question")
     # stating only the figures and that the pages give no reason needs no page citation
