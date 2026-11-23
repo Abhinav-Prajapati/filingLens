@@ -13,7 +13,7 @@ A full-stack, locally hosted research assistant that combines **verified XBRL da
 ![Ant Design](https://img.shields.io/badge/Ant%20Design-6-1677FF?logo=antdesign&logoColor=white)
 ![llama.cpp](https://img.shields.io/badge/llama.cpp-CUDA-000000)
 ![Docker](https://img.shields.io/badge/Docker%20Compose-5%20services-2496ED?logo=docker&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-384%20passing-success)
+![Tests](https://img.shields.io/badge/tests-395%20passing-success)
 
 <img src="docs/screenshots/ask-compare.png" alt="FilingLens answering a three-company revenue comparison" width="900">
 
@@ -33,6 +33,7 @@ A full-stack, locally hosted research assistant that combines **verified XBRL da
 - [Data pipeline](#data-pipeline)
 - [Tech stack](#tech-stack)
 - [Engineering decisions](#engineering-decisions)
+- [Observability](#observability)
 - [Testing and evaluation](#testing-and-evaluation)
 - [Run it](#run-it)
 - [Project structure](#project-structure)
@@ -308,9 +309,31 @@ flowchart LR
 | CPU embeddings for questions | The chat model keeps the GPU | ~50 ms per question on CPU |
 | One DB connection behind a lock | Simple and race-free for a local app | Requests are serialised |
 
+## Observability
+
+Every question leaves a **trace** in Postgres (`ask_trace`), with no extra services:
+- the route it took and why;
+- each planner attempt, with the exact validation or grounding error;
+- the search query, filters, keyword and dense rankings, and the fused passages;
+- every LLM call with prompt, completion and **KV-cache tokens** (from llama.cpp's `timings`);
+- the answer checker's verdict and reason;
+- the time of every step.
+
+It's recorded through a small context-variable tracer (`trace.py`), so deep code adds steps without passing a trace object around. Saving never fails a request.
+
+**Admin → Traces** shows:
+- questions per day;
+- the share answered by the LLM;
+- the fallback rate, the answer-rejection rate and the reasons;
+- p50 and p95 time;
+- the prompt-cache hit rate;
+- p50 and p95 time per step type.
+
+Each trace opens as a step waterfall with every step's details. `filinglens eval` writes one trace per question tagged with its run, so a failed case shows exactly which step went wrong. `filinglens traces --show ID` prints a trace in the terminal, and `--prune 30` deletes traces older than 30 days.
+
 ## Testing and evaluation
 
-- **384 offline tests** (`pytest`, ~35 s): parsing, units, fiscal calendar, fact merging, validation, both planners, follow-ups, the LLM loop, answer checks, API routes, auth, chats and the GPU swap order. Each test gets its own Postgres schema.
+- **395 offline tests** (`pytest`, ~35 s): parsing, units, fiscal calendar, fact merging, validation, both planners, follow-ups, the LLM loop, answer checks, API routes, auth, chats and the GPU swap order. Each test gets its own Postgres schema.
 - **Fakes instead of mocks**: `FakeLLM` replays scripted replies and records every request. A tiny fake llama.cpp HTTP server tests the model swap sequence.
 - **Retrieval recall set** (`pytest -m embed`): recall@5 on real annual-report questions.
 - **End-to-end evaluation** (`filinglens eval`): 61 questions scored on the right tool, arguments, values, cited page, correct refusals, no number when data is missing, and **zero fabricated numbers**. Runs in rules or LLM mode, and saves runs to JSON for comparison.
@@ -364,6 +387,7 @@ filinglens serve                            # API + UI on :8765, docs at /docs
 | `GET /chats` · `GET/PATCH/DELETE /chats/{id}` | Your chats |
 | `POST /auth/register` · `/auth/login` · `/auth/logout` · `GET /auth/me` | Accounts |
 | `GET /admin/companies` · `POST /admin/companies/{symbol}/download` · `/admin/embeddings` | Admin: NSE downloads, ingest, embedding jobs |
+| `GET /admin/traces` · `/admin/traces/stats` · `/admin/traces/{id}` | Admin: request traces and their stats |
 
 Every response is a typed Pydantic model. Interactive docs at `/docs`, schema at `/openapi.json`.
 </details>
@@ -392,11 +416,12 @@ src/filingLens/
 ├── storage/            # Postgres schema and repositories, S3 store
 ├── api/                # FastAPI app, auth, chats, admin, embedding jobs
 ├── chats.py            # chat store and titles
+├── trace.py            # request traces (Admin → Traces)
 └── acquire.py          # NSE downloader
 web/src/                # React + Ant Design + ECharts UI
 llm/models.ini          # llama.cpp router presets
 evals/questions.yaml    # end-to-end evaluation set
-tests/                  # 384 tests, golden data, recall set
+tests/                  # 395 tests, golden data, recall set
 ```
 
 ## Limitations and next steps

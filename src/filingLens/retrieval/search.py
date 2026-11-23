@@ -10,6 +10,7 @@ hundreds of chunks, and those mid-ranked-in-both chunks out-scored a #1 from one
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -123,13 +124,26 @@ class Searcher:
         self.con, self.index, self.embedder, self.pool = con, index, embedder, pool
 
     def search(self, query: str, filters: SearchFilters = SearchFilters(), k: int = 5) -> list[Hit]:
-        rankings = {"keyword": keyword_search(self.con, query, filters, self.pool)}
-        if self.index is not None and self.embedder is not None:
-            qv = self.embedder.embed([query])[0]
-            rankings["dense"] = dense_search(self.index, qv, allowed_ids(self.con, filters),
-                                             self.pool)
-        fused = rrf(rankings)[:k]
-        return self._hydrate(fused)
+        from filingLens import trace
+
+        with trace.step("search", "search") as s:
+            t0 = time.perf_counter()
+            rankings = {"keyword": keyword_search(self.con, query, filters, self.pool)}
+            s.detail["keyword_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+            if self.index is not None and self.embedder is not None:
+                t1 = time.perf_counter()
+                qv = self.embedder.embed([query])[0]
+                s.detail["embed_ms"] = round((time.perf_counter() - t1) * 1000, 1)
+                rankings["dense"] = dense_search(self.index, qv,
+                                                 allowed_ids(self.con, filters), self.pool)
+            fused = rrf(rankings)[:k]
+            s.detail.update(
+                fts=fts_query(query, frozenset(t.lower() for t in filters.tickers)),
+                filters={"tickers": list(filters.tickers), "fys": list(filters.fys),
+                         "sections": list(filters.sections)},
+                keyword=rankings["keyword"], dense=rankings.get("dense"),
+                fused=[{"chunk": c, "score": round(sc, 4), "ranks": rk} for c, sc, rk in fused])
+            return self._hydrate(fused)
 
     def _hydrate(self, fused: list[tuple[str, float, dict[str, int]]]) -> list[Hit]:
         if not fused:

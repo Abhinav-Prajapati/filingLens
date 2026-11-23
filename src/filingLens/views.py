@@ -123,6 +123,7 @@ class AnswerView(BaseModel):
     errors: list[str] = Field(default_factory=list)
     seconds: float = 0.0
     chat_id: str | None = None                 # the chat this turn was saved to (POST /ask)
+    trace_id: str | None = None                # its request trace (Admin -> Traces)
 
 
 # ---- building views ------------------------------------------------------------------------

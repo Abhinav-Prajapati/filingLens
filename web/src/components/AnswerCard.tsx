@@ -3,6 +3,7 @@ import {
   BulbOutlined, ClockCircleOutlined, EditOutlined, RobotOutlined, SafetyCertificateOutlined, SearchOutlined, SettingOutlined,
 } from '@ant-design/icons'
 import type { AnswerView } from '../lib/api'
+import { useAuth } from '../lib/auth'
 import { useMeta } from '../lib/meta'
 import { ChartPanel } from '../charts/ChartPanel'
 import { DataTable } from './DataTable'
@@ -62,6 +63,7 @@ export function AnswerCard({ a }: { a: AnswerView }) {
   const section = (label: string) => <Divider titlePlacement="start" plain style={{ margin: 0 }}>{label}</Divider>
   const hasFigures = (a.tool === 'get_value' && valueStat) || (d && (a.tool === 'get_trend' || a.tool === 'compare')) || (explain && a.figures)
 
+  const isAdmin = useAuth().user?.role === 'admin'
   const tags = (
         <Space size={4} wrap style={{ justifyContent: 'flex-end' }}>
           <Tooltip title="What understood the question">
@@ -74,9 +76,16 @@ export function AnswerCard({ a }: { a: AnswerView }) {
               <Tag color="success" icon={<SafetyCertificateOutlined />} style={{ margin: 0 }}>Verified · {verified}</Tag>
             </Tooltip>
           )}
-          <Tag icon={<ClockCircleOutlined />} style={{ margin: 0 }}>
-            {a.seconds < 0.001 ? '<1 ms' : a.seconds < 1 ? `${Math.round(a.seconds * 1000)} ms` : `${a.seconds.toFixed(1)} s`}
-          </Tag>
+          {(() => {
+            const took = (
+              <Tag icon={<ClockCircleOutlined />} style={{ margin: 0 }}>
+                {a.seconds < 0.001 ? '<1 ms' : a.seconds < 1 ? `${Math.round(a.seconds * 1000)} ms` : `${a.seconds.toFixed(1)} s`}
+              </Tag>
+            )
+            return isAdmin && a.trace_id
+              ? <Tooltip title="Open the trace: each step and its time"><a href={`#traces/${a.trace_id}`} aria-label="Open the trace">{took}</a></Tooltip>
+              : took
+          })()}
         </Space>
   )
 

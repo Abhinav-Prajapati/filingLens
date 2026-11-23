@@ -15,6 +15,7 @@
     filinglens llm-check    [-n 5]                              test the LLM connection
     filinglens serve        [--port 8765] [--no-llm]            HTTP API (docs at /docs)
     filinglens users create-admin EMAIL                        make (or promote) an admin
+    filinglens traces [--show ID] [--prune DAYS]               request traces (Admin -> Traces)
     filinglens index        [--model bge-m3|hash]   embed new chunks -> vectors.npy
     filinglens search "QUERY" [--ticker TCS] [--fy FY25] [--section mdna] [-k 5]
 """
@@ -725,10 +726,35 @@ def cmd_llm_check(args: argparse.Namespace) -> int:
     return 0 if ok == len(examples) else 1
 
 
+def cmd_traces(args: argparse.Namespace) -> int:
+    from filingLens.trace import TraceRepo
+
+    with _db(args.database_url) as con:
+        repo = TraceRepo(con)
+        if args.prune is not None:
+            print(f"deleted {repo.prune(args.prune)} traces older than {args.prune} days")
+        if args.show:
+            t = repo.get(args.show)
+            if t is None:
+                print(f"no trace {args.show}", file=sys.stderr)
+                return 1
+            print(f"{t.created_at.astimezone():%Y-%m-%d %H:%M:%S}  {t.source}  {t.mode} {t.tool}  "
+                  f"{t.outcome}  {t.total_ms:.0f} ms  {t.question}")
+            for s in t.steps or []:
+                print(f"  {s['start_ms']:8.1f} +{s['ms']:8.1f} ms  {s['kind']:8s} {s['name']:14s} "
+                      f"{s['status']:5s} {json.dumps(s['detail'], ensure_ascii=False)[:150]}")
+        if args.prune is None and not args.show:
+            for t in repo.search(limit=20):
+                print(f"{t.id}  {t.created_at.astimezone():%m-%d %H:%M}  {t.mode or '-':7s} "
+                      f"{t.outcome or '-':9s} {t.total_ms:7.0f} ms  {t.question[:60]}")
+    return 0
+
+
 def cmd_eval(args: argparse.Namespace) -> int:
     from filingLens.evaluation import load_cases, previous_summary, run, save, summarise
     from filingLens.llm.client import LLMConfig, make_client
     from filingLens.service import AnswerService, make_guard
+    from filingLens.trace import TraceRepo
 
     cases = load_cases(Path(args.file))
     if args.tag:
@@ -754,17 +780,22 @@ def cmd_eval(args: argparse.Namespace) -> int:
             def show(i: int, r) -> None:  # type: ignore[no-untyped-def]
                 bad = [k for k, v in r.checks.items() if v is False]
                 bad += ["FABRICATED " + ",".join(r.fabricated)] if r.fabricated else []
+                bad += [f"trace {r.trace_id}"] if bad and r.trace_id else []
                 print(f"  {'✓' if r.passed else '✗'} {r.id:4s} {r.mode:6s} {r.tool!s:15s} "
                       f"{r.seconds:6.2f}s  {r.q[:52]:52s} {' '.join(bad)}")
 
-            results = run(cases, svc, show)
+            run_id = f"{time.strftime('%Y%m%d-%H%M%S')}_{mode}"
+            results = run(cases, svc, show, traces=None if args.no_traces else TraceRepo(con),
+                          run_id=run_id)
         summary = summarise(results)
         meta = {"mode": mode, "model": cfg.model if llm else "rules", "cases": args.file,
-                "date": time.strftime("%Y-%m-%d %H:%M")}
+                "date": time.strftime("%Y-%m-%d %H:%M"), "eval_run": run_id}
         path = save(results, summary, meta, out_dir)
         prev = previous_summary(out_dir, mode, before=path)
         _print_scorecard(summary, prev)
         print(f"saved: {path}")
+        if not args.no_traces:
+            print(f"traces: Admin -> Traces, source eval, run {run_id}")
         code = code or (1 if summary["fabricated_numbers"] else 0)
     return code
 
@@ -892,7 +923,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
     p.add_argument("--vectors")
     p.add_argument("--out", default="work/eval")
+    p.add_argument("--no-traces", action="store_true", help="do not keep a trace per question")
     p.set_defaults(func=cmd_eval)
+    p = sub.add_parser("traces", help="request traces: show one, or delete old ones")
+    p.add_argument("--show", metavar="ID", help="print one trace with its steps")
+    p.add_argument("--prune", type=int, metavar="DAYS",
+                   help="delete traces older than DAYS (default retention: 30)")
+    p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
+    p.set_defaults(func=cmd_traces)
     p = sub.add_parser("llm-check", help="test the LLM connection on a few example questions")
     p.add_argument("--database-url", help="default: FILINGLENS_DATABASE_URL")
     p.add_argument("--vectors")

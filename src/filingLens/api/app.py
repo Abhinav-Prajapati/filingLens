@@ -3,6 +3,7 @@
     POST /ask                      question -> AnswerView (written answer + data view), saved
                                    to a chat (see api.chats)
     GET/PATCH/DELETE /chats...     the signed-in user's chats
+    GET  /admin/traces...          admin only: one trace per question (see api.traces)
     GET  /value   /trend  /compare  /search    direct data, no LLM: DataView (table, chart...)
     GET  /companies  /metrics  /health
     POST /auth/register /auth/login /auth/logout   GET /auth/me    accounts (see api.auth)
@@ -30,11 +31,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from filingLens import trace
 from filingLens.analytics.derived import DERIVED
 from filingLens.api.admin import add_admin_routes
 from filingLens.api.auth import add_auth_routes, make_auth
 from filingLens.api.chats import add_chat_routes
 from filingLens.api.embeddings import add_embedding_routes
+from filingLens.api.traces import add_trace_routes
 from filingLens.chats import ChatRepo, llm_title, title_from_question
 from filingLens.companies import DEFAULT_LIST_PATH, registry_with_overlay
 from filingLens.domain.fiscal import fy_int
@@ -46,6 +49,7 @@ from filingLens.nlu.followup import Previous
 from filingLens.service import AnswerService, make_context, make_guard
 from filingLens.storage.db import Database, connect
 from filingLens.storage.objects import ObjectStore
+from filingLens.trace import TraceRepo
 from filingLens.views import AnswerView, DataView, answer_view, data_view, metric_label
 
 Scope = Literal["consolidated", "standalone"]
@@ -159,7 +163,9 @@ def create_app(database_url: str | None = None, vectors: str | Path | None = Non
                        allow_methods=["GET", "POST", "PATCH", "DELETE"], allow_headers=["*"])
     add_auth_routes(app, auth)
     chats = ChatRepo(con)
+    traces = TraceRepo(con)
     add_chat_routes(app, auth.current_user, chats, lock)
+    add_trace_routes(app, auth.require_role("admin"), traces, lock)
     app.state.downloads = add_admin_routes(app, auth.require_role("admin"), st, lock,
                                            data_dir / "inbox", objects,
                                            database_url=database_url)
@@ -181,10 +187,13 @@ def create_app(database_url: str | None = None, vectors: str | Path | None = Non
         the lock, so it never holds up the next question's data lookups."""
         if client is None or st.llm_paused:
             return
-        title = llm_title(client, question, st.ctx)
-        if title:
-            with lock:
+        with trace.start_trace(question, source="title", chat_id=chat_id) as t:
+            title = llm_title(client, question, st.ctx)
+            t.set(outcome="answered" if title else "rejected", mode="llm", tool="title")
+        with lock:
+            if title:
                 chats.set_llm_title(chat_id, title)
+            traces.save(t)
 
     @app.post("/ask", response_model=AnswerView)
     def ask(req: AskRequest, background: BackgroundTasks,
@@ -196,21 +205,31 @@ def create_app(database_url: str | None = None, vectors: str | Path | None = Non
         svc = AnswerService(st.ctx, use, req.write_answer, reason, st.guard)
         uid = str(user.id)
         with lock:
-            prev = Previous(req.previous.question, req.previous.tool) if req.previous else None
-            if req.chat_id is not None:
-                chat = chats.get(req.chat_id, uid)
-                if chat is None:
-                    raise HTTPException(404, "chat not found")
-                last = chats.turns(chat.id)[-1:]       # the follow-up context is the chat's
-                if last:
-                    a = AnswerView.model_validate_json(last[0].answer_json)
-                    prev = Previous(a.question, a.tool)
-            r = svc.answer(req.question, prev)
-            view = answer_view(r, st.reg)
-            first = req.chat_id is None
-            chat_id = req.chat_id or chats.create(uid, title_from_question(req.question)).id
-            view.chat_id = chat_id
-            chats.add_turn(chat_id, req.question, view.model_dump_json())
+            with trace.start_trace(req.question, source="api", user_id=uid,
+                                   chat_id=req.chat_id) as t:
+                prev = Previous(req.previous.question, req.previous.tool) if req.previous else None
+                if req.chat_id is not None:
+                    chat = chats.get(req.chat_id, uid)
+                    if chat is None:
+                        raise HTTPException(404, "chat not found")
+                    last = chats.turns(chat.id)[-1:]       # the follow-up context is the chat's
+                    if last:
+                        a = AnswerView.model_validate_json(last[0].answer_json)
+                        prev = Previous(a.question, a.tool)
+                try:
+                    r = svc.answer(req.question, prev)
+                except Exception as e:
+                    t.set(outcome="failed", error=f"{type(e).__name__}: {e}")
+                    traces.save(t)
+                    raise
+                view = answer_view(r, st.reg)
+                first = req.chat_id is None
+                chat_id = req.chat_id or chats.create(uid, title_from_question(req.question)).id
+                view.chat_id, view.trace_id = chat_id, t.id
+                t.set(chat_id=chat_id)
+                seq = chats.add_turn(chat_id, req.question, view.model_dump_json(), trace_id=t.id)
+                t.set(chat_seq=seq)
+            traces.save(t)                   # after the trace closed, so total_ms is set
         if first and use is not None:          # the LLM switch is on: it may name the chat too
             background.add_task(name_chat, chat_id, req.question)
         return view

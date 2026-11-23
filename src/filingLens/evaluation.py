@@ -10,6 +10,7 @@ Runs are saved as JSON (work/eval/<timestamp>_<mode>.json) so runs can be compar
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import time
@@ -23,6 +24,7 @@ import yaml
 
 from filingLens.llm.answer import evidence, unsupported_numbers
 from filingLens.service import AnswerService, Response
+from filingLens.trace import TraceRepo, start_trace, step
 
 DEFAULT_CASES = Path("evals/questions.yaml")
 CHECKS = ("tool", "args", "values", "pages", "refuse", "no_value", "answer")
@@ -49,6 +51,7 @@ class CaseResult:
     answer: str | None = None
     errors: list[str] = field(default_factory=list)
     seconds: float = 0.0
+    trace_id: str | None = None                 # Admin -> Traces, when traces are kept
 
     @property
     def passed(self) -> bool:
@@ -120,15 +123,31 @@ def score(case: Case, r: Response) -> CaseResult:
 
 # ---- running and reporting -------------------------------------------------------------------
 def run(cases: list[Case], service: AnswerService,
-        progress: Callable[[int, CaseResult], None] | None = None) -> list[CaseResult]:
+        progress: Callable[[int, CaseResult], None] | None = None,
+        traces: TraceRepo | None = None, run_id: str | None = None) -> list[CaseResult]:
+    """``traces``: keep one trace per question (source "eval", ``run_id``), so a failed case
+    can be opened in Admin -> Traces to see which step went wrong."""
     out = []
     for i, c in enumerate(cases, 1):
         t0 = time.monotonic()
-        try:
-            res = score(c, service.answer(c.q))
-        except Exception as e:                      # noqa: BLE001 - one bad case must not stop a run
-            res = CaseResult(c.id, c.q, c.tags, "error", None, None, {"tool": False},
-                             errors=[f"{type(e).__name__}: {e}"])
+        with contextlib.ExitStack() as stack:
+            t = stack.enter_context(start_trace(c.q, source="eval", eval_run=run_id)) \
+                if traces is not None else None
+            try:
+                res = score(c, service.answer(c.q))
+            except Exception as e:                  # noqa: BLE001 - one bad case must not stop a run
+                res = CaseResult(c.id, c.q, c.tags, "error", None, None, {"tool": False},
+                                 errors=[f"{type(e).__name__}: {e}"])
+                if t is not None:
+                    t.set(outcome="failed", error=res.errors[0])
+            if t is not None:
+                with step("eval", "eval") as st:
+                    st.detail.update(case=c.id, passed=res.passed, checks=res.checks,
+                                     fabricated=res.fabricated)
+                    st.status = "ok" if res.passed else "error"
+                res.trace_id = t.id
+        if traces is not None and t is not None:
+            traces.save(t)
         res.seconds = round(time.monotonic() - t0, 2)
         out.append(res)
         if progress:

@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from filingLens import trace
 from filingLens.llm.client import LLMClient, LLMReply
 from filingLens.llm.executor import Context, ToolResult, execute
 from filingLens.llm.prompt import build_system_prompt, join_names, short_name
@@ -142,46 +143,63 @@ def ask(question: str, llm: LLMClient, ctx: Context, max_attempts: int = 2,
     out = AskResult(question)
     for attempt in range(1, max_attempts + 1):
         out.attempts = attempt
-        try:
-            reply = llm.chat(messages, tools)
-        except Exception as e:                      # noqa: BLE001 - network/server errors
-            out.errors.append(f"LLM request failed: {type(e).__name__}: {e}")
-            break
-        out.replies.append(reply)
-        asked = _asks_back(reply)
-        if asked:
-            args = validate_call("ask_user", {"question": asked}, reg)
-            out.tool, out.args = "ask_user", args.model_dump()
-            out.result = execute("ask_user", args, ctx)
-            break
-        if reply.error or not reply.tool_calls:
-            err = reply.error or "no tool call in the reply"
-        elif len(reply.tool_calls) > 1:
-            err = f"{len(reply.tool_calls)} tool calls; exactly one is allowed"
-        else:
-            call = reply.tool_calls[0]
+        run: tuple[str, Any, str | None] | None = None
+        err: str | None = None
+        with trace.step("plan_attempt", "plan") as s:
+            s.detail["attempt"] = attempt
             try:
-                args = validate_call(call.name, call.arguments, reg)
-            except ValueError as e:
-                err = str(e)
+                reply = llm.chat(messages, tools)
+            except Exception as e:                  # noqa: BLE001 - network/server errors
+                out.errors.append(f"LLM request failed: {type(e).__name__}: {e}")
+                s.status, s.detail["error"] = "error", out.errors[-1]
+                break
+            out.replies.append(reply)
+            asked = _asks_back(reply)
+            if asked:
+                s.detail.update(result="asked back", question=asked)
+                args = validate_call("ask_user", {"question": asked}, reg)
+                out.tool, out.args = "ask_user", args.model_dump()
+                out.result = execute("ask_user", args, ctx)
+                break
+            if reply.error or not reply.tool_calls:
+                err = reply.error or "no tool call in the reply"
+            elif len(reply.tool_calls) > 1:
+                err = f"{len(reply.tool_calls)} tool calls; exactly one is allowed"
             else:
-                bad = ungrounded_tickers(question, _tickers(args.model_dump()), ctx, previous)
-                if bad:
-                    err = (f"the user did not name {', '.join(bad)}. Use only companies named "
-                           "in the question; if they named a company not in the list, call "
-                           "ask_user")
+                call = reply.tool_calls[0]
+                s.detail["call"] = {"tool": call.name, "arguments": call.raw or call.arguments}
+                try:
+                    args = validate_call(call.name, call.arguments, reg)
+                except ValueError as e:
+                    err = str(e)
                 else:
-                    args, fixed = fix_month_quarter(question, call.name, args)
-                    out.tool, out.args = call.name, args.model_dump()
-                    try:
-                        out.result = execute(call.name, args, ctx)
-                    except Exception as e:      # noqa: BLE001 - report, never crash the caller
-                        out.errors.append(f"tool {call.name} failed: {type(e).__name__}: {e}")
-                        out.result = ToolResult(call.name, "the data lookup failed",
-                                                notes=[f"{type(e).__name__}: {e}"])
-                    if fixed:
-                        out.result.notes.insert(0, fixed)
-                    break
+                    bad = ungrounded_tickers(question, _tickers(args.model_dump()), ctx, previous)
+                    if bad:
+                        err = (f"the user did not name {', '.join(bad)}. Use only companies "
+                               "named in the question; if they named a company not in the list, "
+                               "call ask_user")
+                    else:
+                        args, fixed = fix_month_quarter(question, call.name, args)
+                        run = (call.name, args, fixed)
+                        s.detail.update(result="valid", tool=call.name, args=args.model_dump(),
+                                        fixed=fixed)
+            if err:
+                s.status = "error"
+                s.detail.update(result="invalid", error=err,
+                                calls=[c.name for c in reply.tool_calls])
+        if run is not None:
+            name, args, fixed = run
+            out.tool, out.args = name, args.model_dump()
+            try:
+                out.result = execute(name, args, ctx)
+            except Exception as e:              # noqa: BLE001 - report, never crash the caller
+                out.errors.append(f"tool {name} failed: {type(e).__name__}: {e}")
+                out.result = ToolResult(name, "the data lookup failed",
+                                        notes=[f"{type(e).__name__}: {e}"])
+            if fixed:
+                out.result.notes.insert(0, fixed)
+            break
+        assert err is not None
         out.errors.append(err)
         messages += [_assistant_turn(reply), _correction(reply, err)]
     if out.result is None:

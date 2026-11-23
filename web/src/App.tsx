@@ -3,7 +3,7 @@ import {
   App as AntApp, Avatar, Button, ConfigProvider, Divider, Dropdown, Flex, Layout, Menu, Result, Spin, Tag, Typography, theme,
 } from 'antd'
 import {
-  DashboardOutlined, DatabaseOutlined, LogoutOutlined, MessageOutlined, ReloadOutlined, UpOutlined, UserOutlined,
+  DashboardOutlined, DatabaseOutlined, LogoutOutlined, MessageOutlined, NodeIndexOutlined, ReloadOutlined, UpOutlined, UserOutlined,
 } from '@ant-design/icons'
 import { AuthProvider, useAuth } from './lib/auth'
 import { MetaProvider, useMeta } from './lib/meta'
@@ -14,9 +14,10 @@ import { ChatList } from './components/ChatList'
 import { ChatsProvider } from './lib/chats'
 import { Brand, ThemeSwitch } from './components/Chrome'
 import { ExplorePage } from './components/ExplorePage'
+import { TracesPage } from './components/TracesPage'
 import { Welcome } from './components/Welcome'
 
-type Page = 'ask' | 'explore' | 'data'
+type Page = 'ask' | 'explore' | 'data' | 'traces'
 
 /** Ant Design's own theme: the default (light) or dark algorithm, nothing overridden. */
 export default function App() {
@@ -76,6 +77,7 @@ function Shell() {
     const [h, id] = location.hash.replace('#', '').split('/')
     if (h === 'explore') return { page: 'explore', chat: null }
     if (h === 'data' && isAdmin) return { page: 'data', chat: null }
+    if (h === 'traces' && isAdmin) return { page: 'traces', chat: id || null }   // chat = the open trace
     return { page: 'ask', chat: h === 'ask' && id ? id : null }
   }, [isAdmin])
   const [route, setRoute] = useState(read)
@@ -85,7 +87,7 @@ function Shell() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [read])
   const go = useCallback((page: Page, chat: string | null = null, replace = false) => {
-    const hash = page === 'ask' ? (chat ? `#ask/${chat}` : '#') : `#${page}`
+    const hash = page === 'ask' ? (chat ? `#ask/${chat}` : '#') : chat ? `#${page}/${chat}` : `#${page}`
     if (location.hash !== hash && !(hash === '#' && !location.hash)) {
       history[replace ? 'replaceState' : 'pushState'](null, '', location.pathname + location.search + hash)
     }
@@ -122,7 +124,10 @@ function Shell() {
               { key: 'explore', icon: <DashboardOutlined />, label: 'Explore' },
               ...(isAdmin ? [{
                 type: 'group' as const, key: 'admin', label: 'Admin',
-                children: [{ key: 'data', icon: <DatabaseOutlined />, label: 'Data' }],
+                children: [
+                  { key: 'data', icon: <DatabaseOutlined />, label: 'Data' },
+                  { key: 'traces', icon: <NodeIndexOutlined />, label: 'Traces' },
+                ],
               }] : []),
             ]}
           />
@@ -167,7 +172,9 @@ function Shell() {
               subTitle={<>{error} <Typography.Text code>filinglens serve</Typography.Text></>}
               extra={<Button type="primary" icon={<ReloadOutlined />} onClick={retry}>Try again</Button>}
             />
-          ) : page === 'ask' ? <AskPage chatId={route.chat} onChat={savedChat} /> : page === 'explore' ? <ExplorePage /> : isAdmin ? <AdminData /> : null}
+          ) : page === 'ask' ? <AskPage chatId={route.chat} onChat={savedChat} /> : page === 'explore' ? <ExplorePage />
+            : page === 'traces' && isAdmin ? <TracesPage openId={route.chat} onOpen={(id) => go('traces', id)} />
+              : isAdmin ? <AdminData /> : null}
         </Layout.Content>
       </Layout>
     </Layout>

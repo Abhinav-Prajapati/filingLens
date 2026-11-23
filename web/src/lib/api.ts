@@ -29,6 +29,7 @@ export interface AnswerView {
   figures: DataView | null              // "why" questions: the figures behind the report passages
   notes: string[]; errors: string[]; seconds: number
   chat_id: string | null                // the chat the turn was saved to
+  trace_id?: string | null              // its request trace (Admin -> Traces)
 }
 // chats: see filingLens.api.chats
 export interface ChatInfo {
@@ -79,6 +80,31 @@ export interface NSEFile { kind: 'xbrl' | 'annual_report'; period: string; fy: s
 export interface NSEAvailability {
   symbol: string; checked_at: string; xbrl_filings: number; full_years: string[]; quarters: string[]
   annual_reports: string[]; new_files: number; files: NSEFile[]; warning: string | null
+}
+
+// request traces (admin): see filingLens.api.traces
+export type TraceSource = 'api' | 'eval' | 'title' | 'cli'
+export interface TraceSummary {
+  id: string; created_at: string; source: TraceSource; eval_run: string | null; user_id: string | null
+  chat_id: string | null; chat_seq: number | null; question: string; read_as: string | null
+  mode: string | null; tool: string | null; outcome: string | null; reject_reason: string | null
+  llm_model: string | null; llm_calls: number; prompt_tokens: number; completion_tokens: number
+  cached_tokens: number; total_ms: number; error: string | null
+}
+export interface TraceStep {
+  name: string; kind: string; start_ms: number; ms: number; status: 'ok' | 'error'
+  parent: string | null; detail: Record<string, unknown>
+}
+export interface TraceDetail extends TraceSummary { steps: TraceStep[] }
+export interface TracePage { items: TraceSummary[]; next_before: string | null }
+export interface TraceStats {
+  days: number; questions: number; llm: number; rejected: number; failed: number; clarify: number
+  fallback: number; retried: number; p50_ms: number; p95_ms: number; prompt_tokens: number
+  completion_tokens: number; cached_tokens: number; cache_rate: number | null
+  steps: { kind: string; count: number; p50_ms: number; p95_ms: number }[]
+  reject_reasons: { reason: string; count: number }[]
+  modes: { mode: string; count: number }[]
+  per_day: { day: string; count: number; p50_ms: number }[]
 }
 
 /** Fired when the API answers 401 (session missing or expired); the auth layer signs out. */
@@ -166,6 +192,10 @@ export const admin = {
   embed: (body: { doc_ids?: string[]; tickers?: string[]; device: EmbedDevice }) =>
     request<EmbedJob>('/admin/embeddings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
   stopEmbed: () => request<EmbedJob>('/admin/embeddings', { method: 'DELETE' }),
+  traces: (p: { source?: TraceSource; mode?: string; outcome?: string; q?: string; eval_run?: string; days?: number; before?: string; limit?: number }) =>
+    request<TracePage>('/admin/traces?' + qs(p)),
+  trace: (id: string) => request<TraceDetail>(`/admin/traces/${encodeURIComponent(id)}`),
+  traceStats: (days: number, source: TraceSource) => request<TraceStats>(`/admin/traces/stats?${qs({ days, source })}`),
   nse: (symbol: string, refresh = false, signal?: AbortSignal) =>
     request<NSEAvailability>(`/admin/companies/${encodeURIComponent(symbol)}/nse${refresh ? '?refresh=true' : ''}`, { signal }),
 }

@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from filingLens import trace
 from filingLens.companies import (
     DEFAULT_LIST_PATH,
     CompanyGuard,
@@ -208,6 +209,23 @@ SMALL_TALK_REPLY = ("Ask about a company's figures (\"TCS revenue FY24\"), a com
                     "what its annual report says.")
 
 
+def route(path: str, **detail: Any) -> None:
+    """Record which path a question took, and why, on the current trace."""
+    with trace.step("route", "route") as s:
+        s.detail.update(path=path, **detail)
+
+
+def outcome_of(r: Response) -> str:
+    """answered | rejected (written answer failed its check) | clarify | empty."""
+    if r.result is None:
+        return "empty"
+    if r.result.clarify:
+        return "clarify"
+    if r.answer.rejected:
+        return "rejected"
+    return "empty" if r.result.empty else "answered"
+
+
 def as_change(tool: str, args: dict) -> tuple[str, dict]:
     """A "why" question about one year ("why did Infosys profit fall") is about the change
     into that year: ask for the year before too, so there is a change to explain."""
@@ -253,26 +271,37 @@ class AnswerService:
         t0 = time.monotonic()
         reg = self.ctx.registry
         read: list[str] = []                          # how the question was read
-        if SMALL_TALK.fullmatch(question.strip().lower()):
+        typed = question
+        with trace.step("prepare", "prepare") as s:
+            small = bool(SMALL_TALK.fullmatch(question.strip().lower()))
+            s.detail["small_talk"] = small
+            if not small:
+                question, follow = combine(previous, question, reg)
+                if follow:
+                    read.append(follow)
+                question, fixes = correct_companies(question, reg, rules.question_words(reg))
+                read += [f"read “{f.typed}” as “{f.read_as}”" for f in fixes]
+                s.detail.update(previous=previous.question if previous else None,
+                                joined=bool(follow), spelling=[f.typed for f in fixes],
+                                read_as=question if question != typed else None)
+        if small:
             r = Response(question, "rules", "ask_user", {})
             r.result = ToolResult("ask_user", "nothing to look up", clarify=SMALL_TALK_REPLY)
-            r.seconds = round(time.monotonic() - t0, 2)
-            return r
-        question, follow = combine(previous, question, reg)
-        if follow:
-            read.append(follow)
-        question, fixes = correct_companies(question, reg, rules.question_words(reg))
-        read += [f"read “{f.typed}” as “{f.read_as}”" for f in fixes]
-        # a message read on its own still goes to the model with the turn before it
-        r = self._answer(question, None if follow else previous, joined=bool(follow))
-        r.notes[:0] = read
+        else:
+            # a message read on its own still goes to the model with the turn before it
+            r = self._answer(question, None if follow else previous, joined=bool(follow))
+            r.notes[:0] = read
         r.seconds = round(time.monotonic() - t0, 2)
+        trace.set_fields(read_as=question if question != typed else None, mode=r.mode,
+                         tool=r.tool, outcome=outcome_of(r),
+                         reject_reason=r.answer.rejected)
         return r
 
     def _answer(self, question: str, previous: Previous | None = None,
                 joined: bool = False) -> Response:
         missing = self.guard.find(question) if self.guard else []
         if missing:
+            route("not loaded", companies=[c.symbol for c in missing])
             r = Response(question, "rules", "ask_user", {}, notes=[
                 "the question names a company that is not loaded"])
             r.result = ToolResult("ask_user", "company not loaded",
@@ -286,11 +315,16 @@ class AnswerService:
             # small models misread it (two calls, one company): plan it by rules when they can
             p = rules.plan(question, self.ctx.registry)
             if p is not None and p.tool in DATA_TOOLS:
+                route("rules", why="follow-up joined by code")
                 r = self._via_rules(question)
                 if r.result is not None and not r.result.empty:
                     if self.write_answer:
                         r.answer = self._checked_answer(question, r.result)
                     return r
+        if self.llm is not None:
+            route("llm", previous=previous.question if previous else None)
+        else:
+            route("rules", why=f"no LLM ({self.no_llm_reason})")
         via_llm = self._via_llm(question, previous) if self.llm is not None else None
         if via_llm is None:
             r = self._via_rules(question)
@@ -317,6 +351,7 @@ class AnswerService:
             args = validate_call(tool, raw, reg)
         except ValueError:
             return None
+        route("explain", figures=tool, args=args.model_dump())
         r = Response(question, "explain", "search_reports", notes=[
             "a “why” question: the figures from the filings, and what the annual report says"])
         figures = self._run(tool, args, r)
@@ -373,6 +408,9 @@ class AnswerService:
             if override is None and res.tool == "ask_user":
                 override = self._search_instead(question)
             if override is not None:
+                with trace.step("override", "override") as st:
+                    st.detail.update(model_tool=res.tool, used=override.tool,
+                                     why=override.notes[0] if override.notes else None)
                 out = override
                 out.errors, out.attempts = list(res.errors), res.attempts
         if res.ok:
@@ -424,9 +462,11 @@ class AnswerService:
         return a
 
     def _fallback(self, question: str, errors: list[str], attempts: int) -> Response:
-        r = self._via_rules(question)
         why = "the LLM request failed" if any("request failed" in e for e in errors) else \
             "the LLM did not produce a valid data request"
+        with trace.step("fallback", "override") as st:
+            st.detail.update(why=why, errors=errors)
+        r = self._via_rules(question)
         r.notes.insert(0, f"answered without the LLM ({why})")
         r.errors, r.attempts = errors, attempts
         return r

@@ -230,20 +230,30 @@ def search_passages(ctx: Context, query: str, tickers: list[str], fys: list[str]
     tried in order, each topping up the hits of the ones before (most specific first); by
     default just (fys, sections). ``must``: keep only passages that mention one of these
     words (any ending: "profit" matches "profits")."""
+    from filingLens import trace
     from filingLens.retrieval.search import Searcher, SearchFilters
 
-    s = ctx.searcher() if ctx.searcher else Searcher(ctx.con)
-    hits: list[Any] = []
-    for tf, ts in tiers or [(fys, sections)]:
-        if len(hits) >= k:
-            break
-        seen = {h.chunk_id for h in hits}
-        found = s.search(query, SearchFilters(tickers=tuple(tickers), fys=tuple(tf),
-                                              sections=tuple(ts)), k=k * 3 if must else k)
-        if must:
-            pat = re.compile(r"\b(" + "|".join(map(re.escape, must)) + r")", re.IGNORECASE)
-            found = [h for h in found if pat.search(h.text)]
-        hits += [h for h in found if h.chunk_id not in seen][:k - len(hits)]
+    with trace.step("report_search", "retrieve") as st:
+        st.detail.update(query=query, tickers=tickers, fys=fys, sections=sections, k=k,
+                         must=must or [])
+        s = ctx.searcher() if ctx.searcher else Searcher(ctx.con)
+        hits: list[Any] = []
+        filled: list[dict[str, Any]] = []
+        for tf, ts in tiers or [(fys, sections)]:
+            if len(hits) >= k:
+                break
+            seen = {h.chunk_id for h in hits}
+            found = s.search(query, SearchFilters(tickers=tuple(tickers), fys=tuple(tf),
+                                                  sections=tuple(ts)), k=k * 3 if must else k)
+            if must:
+                pat = re.compile(r"\b(" + "|".join(map(re.escape, must)) + r")", re.IGNORECASE)
+                found = [h for h in found if pat.search(h.text)]
+            new = [h for h in found if h.chunk_id not in seen][:k - len(hits)]
+            filled.append({"fys": list(tf), "sections": list(ts), "added": len(new)})
+            hits += new
+        st.detail.update(tiers=filled, hits=[{"chunk": h.chunk_id, "page": h.page,
+                                              "section": h.section, "ranks": h.ranks}
+                                             for h in hits])
     r = ToolResult("search_reports", f"search: {query}", columns=["rank", "source", "text"])
     r.rows = [{"rank": i, "source": h.context_line, "text": h.text} for i, h in enumerate(hits, 1)]
     r.citations = [{"ticker": h.ticker, "doc_id": h.doc_id[:12], "page": h.page,
@@ -264,4 +274,11 @@ RUNNERS: dict[str, Callable[[Any, Context], ToolResult]] = {
 
 
 def execute(name: str, args: Any, ctx: Context) -> ToolResult:
-    return RUNNERS[name](args, ctx)
+    from filingLens import trace
+
+    with trace.step(name, "tool") as s:
+        s.detail["args"] = args.model_dump() if hasattr(args, "model_dump") else args
+        res = RUNNERS[name](args, ctx)
+        s.detail.update(rows=len(res.rows), empty=res.empty, clarify=res.clarify,
+                        notes=res.notes[:3])
+        return res

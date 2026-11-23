@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -37,6 +38,7 @@ class LLMReply:
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     error: str | None = None       # unparseable tool call, etc.
+    usage: dict[str, int] = field(default_factory=dict)   # prompt/completion/cached tokens
 
 
 class LLMClient(Protocol):
@@ -173,14 +175,22 @@ class OpenAICompatClient:
             kw |= {"tools": tools, "tool_choice": "auto"}
         from openai import BadRequestError
 
+        t0 = time.perf_counter()
         try:
-            msg = self._client.chat.completions.create(**kw).choices[0].message
+            resp = self._client.chat.completions.create(**kw)
         except BadRequestError as e:
             rejected = reply_from_rejected_call(getattr(e, "body", None), str(e))
             if rejected is None:
+                _record(self.cfg.model, t0, {}, {"error": str(e)[:200]})
                 raise
+            _record(self.cfg.model, t0, {}, {"error": "tool call rejected by the server",
+                                             "tools": bool(tools)})
             return rejected
-        reply = LLMReply(content=msg.content or "")
+        except Exception as e:
+            _record(self.cfg.model, t0, {}, {"error": f"{type(e).__name__}: {e}"[:200]})
+            raise
+        msg = resp.choices[0].message
+        reply = LLMReply(content=msg.content or "", usage=usage_of(resp))
         for tc in msg.tool_calls or []:
             raw = tc.function.arguments or "{}"
             try:
@@ -194,7 +204,40 @@ class OpenAICompatClient:
             call = parse_text_call(reply.content)
             if call:
                 reply.tool_calls.append(call)
+        _record(self.cfg.model, t0, reply.usage, {
+            "tools": bool(tools), "tool_calls": [c.name for c in reply.tool_calls],
+            "reply": reply.content[:160], "error": reply.error})
         return reply
+
+
+def usage_of(resp: Any) -> dict[str, int]:
+    """Token counts from an OpenAI-style response, plus llama.cpp's ``timings`` when present:
+    ``cache_n`` = prompt tokens reused from the KV cache (a warm system prompt)."""
+    out: dict[str, int] = {}
+    u = getattr(resp, "usage", None)
+    if u is not None:
+        out["prompt_tokens"] = int(getattr(u, "prompt_tokens", 0) or 0)
+        out["completion_tokens"] = int(getattr(u, "completion_tokens", 0) or 0)
+        details = getattr(u, "prompt_tokens_details", None)
+        cached = getattr(details, "cached_tokens", None) if details is not None else None
+        if cached:
+            out["cached_tokens"] = int(cached)
+    timings = (getattr(resp, "model_extra", None) or {}).get("timings") or {}
+    if isinstance(timings, dict):
+        if timings.get("cache_n") is not None:
+            out["cached_tokens"] = int(timings["cache_n"])
+        for k in ("prompt_ms", "predicted_ms"):
+            if timings.get(k) is not None:
+                out[k] = int(timings[k])
+    return out
+
+
+def _record(model: str, t0: float, usage: dict[str, int], detail: dict[str, Any]) -> None:
+    from filingLens import trace
+
+    t = trace.current()
+    if t is not None:
+        t.add_llm(model, (time.perf_counter() - t0) * 1000, usage, detail)
 
 
 class FakeLLM:
@@ -209,7 +252,10 @@ class FakeLLM:
         r = self.replies.pop(0)
         if isinstance(r, str):
             call = parse_text_call(r)
-            return LLMReply(content=r, tool_calls=[call] if call else [])
+            r = LLMReply(content=r, tool_calls=[call] if call else [])
+        _record(self.model, time.perf_counter(), r.usage, {
+            "tools": bool(tools), "tool_calls": [c.name for c in r.tool_calls],
+            "reply": r.content[:160], "error": r.error})
         return r
 
 

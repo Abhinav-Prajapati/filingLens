@@ -416,3 +416,51 @@ export function hexA(hex: string, a: number): string {
   const n = parseInt(h, 16)
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`
 }
+
+// ---- request traces (Admin -> Traces) ----------------------------------------------------------
+const fmtMs = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)} s` : `${Math.round(ms)} ms`)
+
+/** One trace as a waterfall: a bar per step from its start to its end; failed steps in the
+ *  error colour. ``labels`` name the rows top-down, in start order. */
+export function stepsOption(t: Tokens, steps: { label: string; start: number; ms: number; error: boolean }[]): EChartsOption {
+  return {
+    ...base(t),
+    grid: { left: 8, right: 56, top: 8, bottom: 24, containLabel: true },
+    tooltip: tooltip(t, {
+      trigger: 'axis', axisPointer: { type: 'shadow' },
+      formatter: (ps: { dataIndex: number }[]) => {
+        const s = steps[ps[0].dataIndex]
+        return head(t, s.label) + row(s.error ? t.down : t.series[0], s.error ? 'failed' : 'took', fmtMs(s.ms))
+          + row(t.muted, 'started at', fmtMs(s.start))
+      },
+    }),
+    xAxis: valAxis(t, '', { axisLabel: { color: t.muted, fontFamily: t.mono, fontSize: 12, formatter: (v: number) => fmtMs(v) } }),
+    yAxis: { ...catAxis(t, steps.map((s) => s.label)), inverse: true, axisLabel: { color: t.ink2, fontSize: 12, margin: 8 } },
+    series: [
+      { type: 'bar', stack: 'w', silent: true, itemStyle: { color: 'transparent' }, data: steps.map((s) => s.start), barMaxWidth: 14 },
+      {
+        type: 'bar', stack: 'w', barMaxWidth: 14,
+        data: steps.map((s) => ({ value: Math.max(s.ms, 0.5), itemStyle: { color: s.error ? t.down : t.series[0], borderRadius: 4 } })),
+        label: { show: true, position: 'right', color: t.ink2, fontSize: 11, formatter: (p: { dataIndex: number }) => fmtMs(steps[p.dataIndex].ms) },
+      },
+    ],
+  }
+}
+
+/** Questions per day (bars). */
+export function dailyOption(t: Tokens, days: { day: string; count: number }[]): EChartsOption {
+  return {
+    ...base(t),
+    grid: { left: 8, right: 8, top: 16, bottom: 8, containLabel: true },
+    tooltip: tooltip(t, {
+      trigger: 'axis', axisPointer: { type: 'shadow' },
+      formatter: (ps: { dataIndex: number }[]) => {
+        const d = days[ps[0].dataIndex]
+        return head(t, d.day) + row(t.series[0], 'questions', String(d.count))
+      },
+    }),
+    xAxis: catAxis(t, days.map((d) => d.day.slice(5))),
+    yAxis: valAxis(t, '', { minInterval: 1, axisLabel: { color: t.muted, fontFamily: t.mono, fontSize: 12 } }),
+    series: [{ type: 'bar', data: days.map((d) => d.count), barMaxWidth: 24, itemStyle: { color: t.series[0], borderRadius: [4, 4, 0, 0] } }],
+  }
+}

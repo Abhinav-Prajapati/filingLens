@@ -138,6 +138,23 @@ def check_answer(text: str, evidence_text: str, question: str, pages: set[int],
 # ---- the call ------------------------------------------------------------------------------
 def compose_answer(question: str, res: ToolResult, llm: LLMClient,
                    figures: ToolResult | None = None) -> Answer:
+    """Write the answer with the model, then check it (see the module docstring)."""
+    from filingLens import trace
+
+    with trace.step("answer", "answer") as s:
+        s.detail["prompt"] = ("explain" if figures is not None and figures.rows else
+                              "search" if res.tool == "search_reports" else "data")
+        a = _compose_answer(question, res, llm, figures)
+        s.detail.update(verdict="rejected" if a.rejected else "passed" if a.text else "none",
+                        reason=a.rejected, pages=a.pages)
+        if a.rejected:
+            s.status = "error"
+        trace.set_fields(answer_rejected=a.rejected)
+        return a
+
+
+def _compose_answer(question: str, res: ToolResult, llm: LLMClient,
+                    figures: ToolResult | None) -> Answer:
     """``figures``: for "why" questions, the verified data shown next to the passages; the
     model may quote its numbers, and reasons must still cite report pages."""
     ev = evidence(res)

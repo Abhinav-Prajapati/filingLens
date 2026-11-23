@@ -71,15 +71,23 @@ def clean_title(text: str | None) -> str | None:
 def llm_title(llm: LLMClient, question: str, ctx: Context) -> str | None:
     """Ask the model for a title; None when the reply is unusable or names a company the
     question does not (small models fill gaps with well-known names)."""
-    try:
-        reply = llm.chat([{"role": "system", "content": TITLE_SYSTEM},
-                          {"role": "user", "content": question}], [])
-    except Exception:                              # noqa: BLE001 - keep the code title
-        return None
-    title = clean_title(reply.content)
-    if title is None or not named_tickers(title, ctx) <= named_tickers(question, ctx):
-        return None
-    return title
+    from filingLens import trace
+
+    with trace.step("title", "title") as s:
+        try:
+            reply = llm.chat([{"role": "system", "content": TITLE_SYSTEM},
+                              {"role": "user", "content": question}], [])
+        except Exception as e:                     # noqa: BLE001 - keep the code title
+            s.status, s.detail["error"] = "error", f"{type(e).__name__}: {e}"
+            return None
+        title = clean_title(reply.content)
+        if title is not None and not named_tickers(title, ctx) <= named_tickers(question, ctx):
+            s.detail["refused"] = "names a company the question does not"
+            title = None
+        s.detail.update(reply=reply.content, title=title)
+        if title is None:
+            s.status = "error"
+        return title
 
 
 class ChatRepo:
@@ -114,12 +122,14 @@ class ChatRepo:
             "SELECT seq, question, answer_json FROM chat_turn WHERE chat_id = ? ORDER BY seq",
             (chat_id,))]
 
-    def add_turn(self, chat_id: str, question: str, answer_json: str) -> int:
+    def add_turn(self, chat_id: str, question: str, answer_json: str,
+                 trace_id: str | None = None) -> int:
         with self.con.transaction():
             seq = self.con.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM chat_turn "
                                    "WHERE chat_id = ?", (chat_id,)).fetchone()[0]
-            self.con.execute("INSERT INTO chat_turn(chat_id, seq, question, answer_json) "
-                             "VALUES (?, ?, ?, ?)", (chat_id, seq, question, answer_json))
+            self.con.execute("INSERT INTO chat_turn(chat_id, seq, question, answer_json, "
+                             "trace_id) VALUES (?, ?, ?, ?, ?)",
+                             (chat_id, seq, question, answer_json, trace_id))
             self.con.execute("UPDATE chat SET updated_at = now() WHERE id = ?", (chat_id,))
         return int(seq)
 

@@ -41,3 +41,14 @@ CREATE TABLE IF NOT EXISTS chat_turn(
   chat_id TEXT NOT NULL REFERENCES chat(id) ON DELETE CASCADE, seq INTEGER NOT NULL,
   question TEXT NOT NULL, answer_json TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(chat_id, seq));
+-- request traces: one row per question (see filingLens.trace); steps = timed steps with details
+CREATE TABLE IF NOT EXISTS ask_trace(
+  id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  source TEXT NOT NULL, eval_run TEXT, user_id TEXT, chat_id TEXT, chat_seq INTEGER,
+  question TEXT NOT NULL, read_as TEXT, mode TEXT, tool TEXT, outcome TEXT, reject_reason TEXT,
+  llm_model TEXT, llm_calls INTEGER NOT NULL DEFAULT 0, prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0, cached_tokens INTEGER NOT NULL DEFAULT 0,
+  total_ms DOUBLE PRECISION NOT NULL DEFAULT 0, error TEXT, steps JSONB);
+CREATE INDEX IF NOT EXISTS ix_trace_created ON ask_trace(created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_trace_filter ON ask_trace(source, mode, outcome, created_at DESC);
+ALTER TABLE chat_turn ADD COLUMN IF NOT EXISTS trace_id TEXT;
